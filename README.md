@@ -1,10 +1,13 @@
 Serde Pickle Serialization Library
 ==================================
 
-[![Build status](https://api.travis-ci.org/birkenfeld/serde-pickle.png)](https://travis-ci.org/birkenfeld/serde-pickle)
-[![Latest Version](https://img.shields.io/crates/v/serde-pickle.svg)](https://crates.io/crates/serde-pickle)
+This is a fork of https://crates.io/crates/serde-pickle with support for recursive data structures and [`variantly`](https://docs.rs/variantly/latest/variantly/) support for `Value` types to make working with pickled data easier.
 
-[Documentation](https://docs.rs/serde-pickle)
+**THIS CRATE IS NOT INTENDED FOR WIDE USE, AND I MAKE NO GUARANTEES ABOUT BEING A GOOD PROJECT MAINTAINER** *(although I will not be evil, I just cannot guarantee that I can support this crate)*
+
+[![Latest Version](https://img.shields.io/crates/v/pickled.svg)](https://crates.io/crates/pickled)
+
+[Documentation](https://docs.rs/pickled)
 
 This crate is a Rust library for parsing and generating Python pickle
 streams. It is built upon [Serde](https://github.com/serde-rs/serde), a high
@@ -14,12 +17,12 @@ Installation
 ============
 
 This crate works with Cargo and can be found on
-[crates.io](https://crates.io/crates/serde-pickle) with a `Cargo.toml` like:
+[crates.io](https://crates.io/crates/pickle) with a `Cargo.toml` like:
 
 ```toml
 [dependencies]
 serde = "1.0"
-serde-pickle = "1.0"
+pickled = "1.0"
 ```
 
 Requirements
@@ -45,13 +48,13 @@ fn main() {
 
     // Serialize the map into a pickle stream.
     // The second argument are serialization options.
-    let serialized = serde_pickle::to_vec(&map, Default::default()).unwrap();
+    let serialized = pickled::to_vec(&map, Default::default()).unwrap();
 
     // Deserialize the pickle stream back into a map.
     // Because we compare it to the original `map` below, Rust infers
     // the type of `deserialized` and lets serde work its magic.
     // The second argument are additional deserialization options.
-    let deserialized = serde_pickle::from_slice(&serialized, Default::default()).unwrap();
+    let deserialized = pickled::from_slice(&serialized, Default::default()).unwrap();
     assert_eq!(map, deserialized);
 }
 ```
