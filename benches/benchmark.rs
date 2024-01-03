@@ -2,8 +2,8 @@
 
 use byteorder::{LittleEndian, WriteBytesExt};
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use serde_pickle;
-use serde_pickle::*;
+use pickled;
+use pickled::*;
 use std::collections::BTreeMap;
 use std::io::Read;
 
@@ -170,11 +170,8 @@ fn bench_picklefile(c: &mut Criterion, filename: &str) {
     // Run the benchmark
     c.bench_function(filename, |b| {
         b.iter(|| {
-            serde_pickle::de::value_from_slice(
-                black_box(&contents),
-                serde_pickle::de::DeOptions::new(),
-            )
-            .unwrap()
+            pickled::de::value_from_slice(black_box(&contents), pickled::de::DeOptions::new())
+                .unwrap()
         })
     });
 }

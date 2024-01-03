@@ -13,8 +13,8 @@ use std::fs::File;
 use std::io::{stdin, stdout, Read};
 use std::process::exit;
 
+use pickled as pickle;
 use serde_json as json;
-use serde_pickle as pickle;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args = env::args().collect::<Vec<_>>();
@@ -39,18 +39,22 @@ fn main() -> Result<(), Box<dyn Error>> {
         "decode" => {
             let decoded: pickle::Value = pickle::value_from_reader(reader, Default::default())?;
             println!("{:#?}", decoded);
-        },
+        }
         "transcode" => {
             let decoded: pickle::Value = pickle::value_from_reader(reader, Default::default())?;
             pickle::value_to_writer(&mut stdout(), &decoded, Default::default())?;
-        },
+        }
         "to_json" => {
             let decoded: json::Value = pickle::from_reader(reader, Default::default())?;
             println!("{:#?}", decoded);
-        },
+        }
         "from_json" => {
             let decoded: json::Value = json::from_reader(reader)?;
-            pickle::to_writer(&mut stdout(), &decoded, pickle::SerOptions::new().proto_v2())?;
+            pickle::to_writer(
+                &mut stdout(),
+                &decoded,
+                pickle::SerOptions::new().proto_v2(),
+            )?;
         }
         _ => {
             println!("No such subcommand.");
