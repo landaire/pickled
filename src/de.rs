@@ -37,13 +37,14 @@ type MemoId = u32;
 
 #[derive(Clone, Debug, PartialEq)]
 enum Global {
-    Set,       // builtins/__builtin__.set
-    Frozenset, // builtins/__builtin__.frozenset
-    Bytearray, // builtins/__builtin__.bytearray
-    List,      // builtins/__builtin__.list
-    Int,       // builtins/__builtin__.int
-    Encode,    // _codecs.encode
-    Other,     // anything else (may be a classobj that is later discarded)
+    Set,                   // builtins/__builtin__.set
+    Frozenset,             // builtins/__builtin__.frozenset
+    Bytearray,             // builtins/__builtin__.bytearray
+    List,                  // builtins/__builtin__.list
+    Int,                   // builtins/__builtin__.int
+    Encode,                // _codecs.encode
+    Reconstructor,         // builtins/__builtin__.object
+    Other(String, String), // anything else (may be a classobj that is later discarded)
 }
 
 /// Our intermediate representation of a value.
@@ -240,20 +241,20 @@ impl<R: Read> Deserializer<R> {
                 Opcode::Put => {
                     let bytes = self.read_line()?;
                     let memo_id = self.parse_ascii(bytes)?;
-                    self.memoize(memo_id)?;
+                    self.memoize_next(memo_id)?;
                 }
                 Opcode::BinPut => {
                     let memo_id = self.read_byte()?;
-                    self.memoize(memo_id.into())?;
+                    self.memoize_next(memo_id.into())?;
                 }
                 Opcode::LongBinPut => {
                     let bytes = self.read_fixed_4_bytes()?;
                     let memo_id = LittleEndian::read_u32(&bytes);
-                    self.memoize(memo_id)?;
+                    self.memoize_next(memo_id)?;
                 }
                 Opcode::Memoize => {
                     let memo_id = self.memo.len();
-                    self.memoize(memo_id as MemoId)?;
+                    self.memoize_next(memo_id as MemoId)?;
                 }
 
                 // Memo getting ops
@@ -511,8 +512,14 @@ impl<R: Read> Deserializer<R> {
                     // or an argument for __setstate__, in which case it can be *any* type
                     // of object.  In both cases, we just replace the standin.
                     let state = self.pop()?;
-                    self.pop()?; // remove the object standin
-                    self.stack.push(state);
+                    let obj = self.pop()?; // remove the object standin
+
+                    let standin = self.resolve(Some(obj.clone()));
+
+                    if let Value::MemoRef(id) = obj {
+                        self.memoize(id, state.clone());
+                        self.stack.push(state);
+                    }
                 }
             }
         }
@@ -575,8 +582,14 @@ impl<R: Read> Deserializer<R> {
 
     // Memoize the current stack top with the given ID.  Moves the actual
     // object into the memo, and saves a reference on the stack instead.
-    fn memoize(&mut self, memo_id: MemoId) -> Result<()> {
-        let mut item = self.pop()?;
+    fn memoize_next(&mut self, memo_id: MemoId) -> Result<()> {
+        let item = self.pop()?;
+        self.memoize(memo_id, item)?;
+        self.stack.push(Value::MemoRef(memo_id));
+        Ok(())
+    }
+
+    fn memoize(&mut self, memo_id: MemoId, mut item: Value) -> Result<()> {
         if let Value::MemoRef(id) = item {
             // TODO: is this even possible?
             item = match self.memo.get(&id) {
@@ -585,7 +598,6 @@ impl<R: Read> Deserializer<R> {
             };
         }
         self.memo.insert(memo_id, (item, 1));
-        self.stack.push(Value::MemoRef(memo_id));
         Ok(())
     }
 
@@ -627,7 +639,7 @@ impl<R: Read> Deserializer<R> {
             // No need to put it back.
         } else {
             let result = f(self, u, value.clone());
-            self.memo.insert(id, (value, count));
+            assert!(self.memo.insert(id, (value, count)).is_none());
             result
         }
     }
@@ -971,7 +983,15 @@ impl<R: Read> Deserializer<R> {
                 Value::Global(Global::Bytearray)
             }
             (b"__builtin__", b"int") | (b"builtins", b"int") => Value::Global(Global::Int),
-            _ => Value::Global(Global::Other),
+            (b"copy_reg", b"_reconstructor") => {
+                Value::Global(Global::Reconstructor)
+            }
+            _ => {
+                Value::Global(Global::Other(
+                    String::from_utf8(modname).map_err(|_| self.inner_error(ErrorCode::StringNotUTF8))?,
+                    String::from_utf8(globname).map_err(|_| self.inner_error(ErrorCode::StringNotUTF8))?
+                ))
+            }
         };
         Ok(value)
     }
@@ -1045,11 +1065,21 @@ impl<R: Read> Deserializer<R> {
                     _ => self.error(ErrorCode::InvalidValue("encode() arg".into())),
                 }
             }
-            Value::Global(Global::Other) => {
+            Value::Global(Global::Reconstructor) => {
+                let _args = self.resolve(argtuple.pop());
+                let _func = self.resolve(argtuple.pop());
+
+                let value = Value::Dict(Vec::new());
+
+                self.stack.push(value);
+                Ok(())
+            }
+            Value::Global(Global::Other(modname, classname)) => {
                 // Anything else; just keep it on the stack as an opaque object.
                 // If it is a class object, it will get replaced later when the
                 // class is instantiated.
-                self.stack.push(Value::Global(Global::Other));
+                self.stack
+                    .push(Value::Global(Global::Other(modname, classname)));
                 Ok(())
             }
             other => Self::stack_error("global reference", &other, self.pos),
