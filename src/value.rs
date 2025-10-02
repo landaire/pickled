@@ -142,9 +142,9 @@ where
     f.write_str(prefix)?;
     for (i, item) in it.enumerate() {
         if i < len - 1 || always_comma {
-            write!(f, "{}, ", item)?;
+            write!(f, "{item}, ")?;
         } else {
-            write!(f, "{}", item)?;
+            write!(f, "{item}")?;
         }
     }
     f.write_str(suffix)
@@ -155,11 +155,11 @@ impl fmt::Display for Value {
         match *self {
             Value::None => write!(f, "None"),
             Value::Bool(b) => write!(f, "{}", if b { "True" } else { "False" }),
-            Value::I64(i) => write!(f, "{}", i),
-            Value::Int(ref i) => write!(f, "{}", i),
-            Value::F64(v) => write!(f, "{}", v),
-            Value::Bytes(ref b) => write!(f, "b{:?}", b), //
-            Value::String(ref s) => write!(f, "{:?}", s),
+            Value::I64(i) => write!(f, "{i}"),
+            Value::Int(ref i) => write!(f, "{i}"),
+            Value::F64(v) => write!(f, "{v}"),
+            Value::Bytes(ref b) => write!(f, "b{b:?}"), //
+            Value::String(ref s) => write!(f, "{s:?}"),
             Value::List(ref v) => write_elements(f, v.iter(), "[", "]", v.len(), false),
             Value::Tuple(ref v) => write_elements(f, v.iter(), "(", ")", v.len(), v.len() == 1),
             Value::FrozenSet(ref v) => {
@@ -176,9 +176,9 @@ impl fmt::Display for Value {
                 write!(f, "{{")?;
                 for (i, (key, value)) in v.iter().enumerate() {
                     if i < v.len() - 1 {
-                        write!(f, "{}: {}, ", key, value)?;
+                        write!(f, "{key}: {value}, ")?;
                     } else {
-                        write!(f, "{}: {}", key, value)?;
+                        write!(f, "{key}: {value}")?;
                     }
                 }
                 write!(f, "}}")
@@ -192,11 +192,11 @@ impl fmt::Display for HashableValue {
         match *self {
             HashableValue::None => write!(f, "None"),
             HashableValue::Bool(b) => write!(f, "{}", if b { "True" } else { "False" }),
-            HashableValue::I64(i) => write!(f, "{}", i),
-            HashableValue::Int(ref i) => write!(f, "{}", i),
-            HashableValue::F64(v) => write!(f, "{}", v),
-            HashableValue::Bytes(ref b) => write!(f, "b{:?}", b), //
-            HashableValue::String(ref s) => write!(f, "{:?}", s),
+            HashableValue::I64(i) => write!(f, "{i}"),
+            HashableValue::Int(ref i) => write!(f, "{i}"),
+            HashableValue::F64(v) => write!(f, "{v}"),
+            HashableValue::Bytes(ref b) => write!(f, "b{b:?}"), //
+            HashableValue::String(ref s) => write!(f, "{s:?}"),
             HashableValue::Tuple(ref v) => {
                 write_elements(f, v.iter(), "(", ")", v.len(), v.len() == 1)
             }

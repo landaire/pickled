@@ -567,7 +567,7 @@ impl<R: Read> Deserializer<R> {
                 .memo
                 .get_mut(&n)
                 .map(|&mut (ref mut v, _)| v)
-                .ok_or_else(|| Error::Syntax(ErrorCode::MissingMemo(n))),
+                .ok_or(Error::Syntax(ErrorCode::MissingMemo(n))),
             Some(other_value) => Ok(other_value),
             None => Err(Error::Eval(ErrorCode::StackUnderflow, self.pos)),
         }
@@ -600,7 +600,7 @@ impl<R: Read> Deserializer<R> {
         if let Value::MemoRef(id) = item {
             // TODO: is this even possible?
             item = match self.memo.get(&id) {
-                Some(&(ref v, _)) => v.clone(),
+                Some((v, _)) => v.clone(),
                 None => return Err(Error::Eval(ErrorCode::MissingMemo(id), self.pos)),
             };
         }
@@ -1100,7 +1100,7 @@ impl<R: Read> Deserializer<R> {
     }
 
     fn stack_error<T>(what: &'static str, value: &Value, pos: usize) -> Result<T> {
-        let it = format!("{:?}", value);
+        let it = format!("{value:?}");
         Err(Error::Eval(ErrorCode::InvalidStackTop(what, it), pos))
     }
 
@@ -1181,7 +1181,7 @@ impl<R: Read> Deserializer<R> {
 impl<'de: 'a, 'a, R: Read> de::Deserializer<'de> for &'a mut Deserializer<R> {
     type Error = Error;
 
-    fn deserialize_any<V: Visitor<'de>>(mut self, visitor: V) -> Result<V::Value> {
+    fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
         let value = self.get_next_value()?;
         match value {
             Value::None => visitor.visit_unit(),
@@ -1191,9 +1191,9 @@ impl<'de: 'a, 'a, R: Read> de::Deserializer<'de> for &'a mut Deserializer<R> {
                 if let Some(i) = v.to_i64() {
                     visitor.visit_i64(i)
                 } else {
-                    return Err(Error::Syntax(ErrorCode::InvalidValue(
+                    Err(Error::Syntax(ErrorCode::InvalidValue(
                         "integer too large".into(),
-                    )));
+                    )))
                 }
             }
             Value::F64(v) => visitor.visit_f64(v),
@@ -1202,7 +1202,7 @@ impl<'de: 'a, 'a, R: Read> de::Deserializer<'de> for &'a mut Deserializer<R> {
             Value::List(v) => {
                 let len = v.len();
                 visitor.visit_seq(SeqAccess {
-                    de: &mut self,
+                    de: self,
                     iter: v.into_iter(),
                     len,
                 })
@@ -1210,17 +1210,17 @@ impl<'de: 'a, 'a, R: Read> de::Deserializer<'de> for &'a mut Deserializer<R> {
             Value::Tuple(v) => visitor.visit_seq(SeqAccess {
                 len: v.len(),
                 iter: v.into_iter(),
-                de: &mut self,
+                de: self,
             }),
             Value::Set(v) | Value::FrozenSet(v) => visitor.visit_seq(SeqAccess {
-                de: &mut self,
+                de: self,
                 len: v.len(),
                 iter: v.into_iter(),
             }),
             Value::Dict(v) => {
                 let len = v.len();
                 visitor.visit_map(MapAccess {
-                    de: &mut self,
+                    de: self,
                     iter: v.into_iter(),
                     value: None,
                     len,
@@ -1265,12 +1265,12 @@ impl<'de: 'a, 'a, R: Read> de::Deserializer<'de> for &'a mut Deserializer<R> {
 
     #[inline]
     fn deserialize_enum<V: Visitor<'de>>(
-        mut self,
+        self,
         _name: &'static str,
         _variants: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value> {
-        visitor.visit_enum(VariantAccess { de: &mut self })
+        visitor.visit_enum(VariantAccess { de: self })
     }
 
     forward_to_deserialize_any! {
@@ -1418,7 +1418,7 @@ impl<'de: 'a, 'a, R: Read> de::MapAccess<'de> for MapAccess<'a, R> {
     fn next_value_seed<T: de::DeserializeSeed<'de>>(&mut self, seed: T) -> Result<T::Value> {
         let value = self.value.take().unwrap();
         self.de.value = Some(value);
-        Ok(seed.deserialize(&mut *self.de)?)
+        seed.deserialize(&mut *self.de)
     }
 
     fn size_hint(&self) -> Option<usize> {

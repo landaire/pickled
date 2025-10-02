@@ -448,7 +448,7 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
 
     #[inline]
     fn serialize_i64(self, value: i64) -> Result<()> {
-        if -0x8000_0000 <= value && value < 0x8000_0000 {
+        if (-0x8000_0000..0x8000_0000).contains(&value) {
             self.write_opcode(BININT)?;
             self.writer.write_i32::<LittleEndian>(value as i32).map_err(From::from)
         } else {
@@ -557,8 +557,7 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
             self.serialize_str(&utf8_value)?;
             self.serialize_str("latin1")?;
             self.write_opcode(TUPLE2)?;
-            self.write_opcode(REDUCE).map_err(From::from)
-        }
+            self.write_opcode(REDUCE)}
     }
 
     #[inline]

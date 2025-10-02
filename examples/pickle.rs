@@ -10,7 +10,7 @@
 use std::env;
 use std::error::Error;
 use std::fs::File;
-use std::io::{stdin, stdout, Read};
+use std::io::{Read, stdin, stdout};
 use std::process::exit;
 
 use pickled as pickle;
@@ -20,7 +20,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let args = env::args().collect::<Vec<_>>();
     if args.len() < 2 {
         println!("Usage: pickle (decode | transcode | to_json | from_json) [filename]");
-        println!("");
+        println!();
         println!("Input is either given file or stdin.");
         println!("decode:    decode and display pickle");
         println!("transcode: decode and re-encode pickle");
@@ -38,7 +38,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     match &*args[1] {
         "decode" => {
             let decoded: pickle::Value = pickle::value_from_reader(reader, Default::default())?;
-            println!("{:#?}", decoded);
+            println!("{decoded:#?}");
         }
         "transcode" => {
             let decoded: pickle::Value = pickle::value_from_reader(reader, Default::default())?;
@@ -46,7 +46,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         "to_json" => {
             let decoded: json::Value = pickle::from_reader(reader, Default::default())?;
-            println!("{:#?}", decoded);
+            println!("{decoded:#?}");
         }
         "from_json" => {
             let decoded: json::Value = json::from_reader(reader)?;
