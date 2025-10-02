@@ -18,6 +18,7 @@ use serde::de::Visitor;
 use serde::{de, forward_to_deserialize_any};
 use std::char;
 use std::collections::BTreeMap;
+use std::convert::TryFrom;
 use std::io;
 use std::io::{BufRead, BufReader, Read};
 use std::iter::FusedIterator;
@@ -200,255 +201,259 @@ impl<R: Read> Deserializer<R> {
     /// pickle until the STOP opcode.
     fn parse_value(&mut self) -> Result<Value> {
         loop {
-            match self.read_byte()? {
+            let value = self.read_byte()?;
+            let opcode = Opcode::try_from(value)
+                .map_err(|code| self.inner_error(code))?;
+
+            match opcode {
                 // Specials
-                PROTO => {
+                Opcode::Proto => {
                     // Ignore this, as it is only important for instances (read
                     // the version byte).
                     self.read_byte()?;
                 }
-                FRAME => {
+                Opcode::Frame => {
                     // We'll ignore framing. But we still have to gobble up the length.
                     self.read_fixed_8_bytes()?;
                 }
-                STOP => return self.pop(),
-                MARK => {
+                Opcode::Stop => return self.pop(),
+                Opcode::Mark => {
                     let stack = mem::replace(&mut self.stack, Vec::with_capacity(128));
                     self.stacks.push(stack);
                 }
-                POP => {
+                Opcode::Pop => {
                     if self.stack.is_empty() {
                         self.pop_mark()?;
                     } else {
                         self.pop()?;
                     }
                 }
-                POP_MARK => {
+                Opcode::PopMark => {
                     self.pop_mark()?;
                 }
-                DUP => {
+                Opcode::Dup => {
                     let top = self.top()?.clone();
                     self.stack.push(top);
                 }
 
                 // Memo saving ops
-                PUT => {
+                Opcode::Put => {
                     let bytes = self.read_line()?;
                     let memo_id = self.parse_ascii(bytes)?;
                     self.memoize(memo_id)?;
                 }
-                BINPUT => {
+                Opcode::BinPut => {
                     let memo_id = self.read_byte()?;
                     self.memoize(memo_id.into())?;
                 }
-                LONG_BINPUT => {
+                Opcode::LongBinPut => {
                     let bytes = self.read_fixed_4_bytes()?;
                     let memo_id = LittleEndian::read_u32(&bytes);
                     self.memoize(memo_id)?;
                 }
-                MEMOIZE => {
+                Opcode::Memoize => {
                     let memo_id = self.memo.len();
                     self.memoize(memo_id as MemoId)?;
                 }
 
                 // Memo getting ops
-                GET => {
+                Opcode::Get => {
                     let bytes = self.read_line()?;
                     let memo_id = self.parse_ascii(bytes)?;
                     self.push_memo_ref(memo_id)?;
                 }
-                BINGET => {
+                Opcode::BinGet => {
                     let memo_id = self.read_byte()?;
                     self.push_memo_ref(memo_id.into())?;
                 }
-                LONG_BINGET => {
+                Opcode::LongBinGet => {
                     let bytes = self.read_fixed_4_bytes()?;
                     let memo_id = LittleEndian::read_u32(&bytes);
                     self.push_memo_ref(memo_id)?;
                 }
 
                 // Singletons
-                NONE => self.stack.push(Value::None),
-                NEWFALSE => self.stack.push(Value::Bool(false)),
-                NEWTRUE => self.stack.push(Value::Bool(true)),
+                Opcode::None => self.stack.push(Value::None),
+                Opcode::NewFalse => self.stack.push(Value::Bool(false)),
+                Opcode::NewTrue => self.stack.push(Value::Bool(true)),
 
                 // ASCII-formatted numbers
-                INT => {
+                Opcode::Int => {
                     let line = self.read_line()?;
                     let val = self.decode_text_int(line)?;
                     self.stack.push(val);
                 }
-                LONG => {
+                Opcode::Long => {
                     let line = self.read_line()?;
                     let long = self.decode_text_long(line)?;
                     self.stack.push(long);
                 }
-                FLOAT => {
+                Opcode::Float => {
                     let line = self.read_line()?;
                     let f = self.parse_ascii(line)?;
                     self.stack.push(Value::F64(f));
                 }
 
                 // ASCII-formatted strings
-                STRING => {
+                Opcode::String => {
                     let line = self.read_line()?;
                     let string = self.decode_escaped_string(&line)?;
                     self.stack.push(string);
                 }
-                UNICODE => {
+                Opcode::Unicode => {
                     let line = self.read_line()?;
                     let string = self.decode_escaped_unicode(&line)?;
                     self.stack.push(string);
                 }
 
                 // Binary-coded numbers
-                BINFLOAT => {
+                Opcode::BinFloat => {
                     let bytes = self.read_fixed_8_bytes()?;
                     self.stack.push(Value::F64(BigEndian::read_f64(&bytes)));
                 }
-                BININT => {
+                Opcode::BinInt => {
                     let bytes = self.read_fixed_4_bytes()?;
                     self.stack
                         .push(Value::I64(LittleEndian::read_i32(&bytes).into()));
                 }
-                BININT1 => {
+                Opcode::BinInt1 => {
                     let byte = self.read_byte()?;
                     self.stack.push(Value::I64(byte.into()));
                 }
-                BININT2 => {
+                Opcode::BinInt2 => {
                     let bytes = self.read_fixed_2_bytes()?;
                     self.stack
                         .push(Value::I64(LittleEndian::read_u16(&bytes).into()));
                 }
-                LONG1 => {
+                Opcode::Long1 => {
                     let bytes = self.read_u8_prefixed_bytes()?;
                     let long = self.decode_binary_long(bytes);
                     self.stack.push(long);
                 }
-                LONG4 => {
+                Opcode::Long4 => {
                     let bytes = self.read_i32_prefixed_bytes()?;
                     let long = self.decode_binary_long(bytes);
                     self.stack.push(long);
                 }
 
                 // Length-prefixed (byte)strings
-                SHORT_BINBYTES => {
+                Opcode::ShortBinBytes => {
                     let string = self.read_u8_prefixed_bytes()?;
                     self.stack.push(Value::Bytes(string));
                 }
-                BINBYTES => {
+                Opcode::BinBytes => {
                     let string = self.read_u32_prefixed_bytes()?;
                     self.stack.push(Value::Bytes(string));
                 }
-                BINBYTES8 => {
+                Opcode::BinBytes8 => {
                     let string = self.read_u64_prefixed_bytes()?;
                     self.stack.push(Value::Bytes(string));
                 }
-                SHORT_BINSTRING => {
+                Opcode::ShortBinString => {
                     let string = self.read_u8_prefixed_bytes()?;
                     let decoded = self.decode_string(string)?;
                     self.stack.push(decoded);
                 }
-                BINSTRING => {
+                Opcode::BinString => {
                     let string = self.read_i32_prefixed_bytes()?;
                     let decoded = self.decode_string(string)?;
                     self.stack.push(decoded);
                 }
-                SHORT_BINUNICODE => {
+                Opcode::ShortBinUnicode => {
                     let string = self.read_u8_prefixed_bytes()?;
                     let decoded = self.decode_unicode(string)?;
                     self.stack.push(decoded);
                 }
-                BINUNICODE => {
+                Opcode::BinUnicode => {
                     let string = self.read_u32_prefixed_bytes()?;
                     let decoded = self.decode_unicode(string)?;
                     self.stack.push(decoded);
                 }
-                BINUNICODE8 => {
+                Opcode::BinUnicode8 => {
                     let string = self.read_u64_prefixed_bytes()?;
                     let decoded = self.decode_unicode(string)?;
                     self.stack.push(decoded);
                 }
-                BYTEARRAY8 => {
+                Opcode::ByteArray8 => {
                     let string = self.read_u64_prefixed_bytes()?;
                     self.stack.push(Value::Bytes(string));
                 }
 
                 // Tuples
-                EMPTY_TUPLE => self.stack.push(Value::Tuple(Vec::new())),
-                TUPLE1 => {
+                Opcode::EmptyTuple => self.stack.push(Value::Tuple(Vec::new())),
+                Opcode::Tuple1 => {
                     let item = self.pop()?;
                     self.stack.push(Value::Tuple(vec![item]));
                 }
-                TUPLE2 => {
+                Opcode::Tuple2 => {
                     let item2 = self.pop()?;
                     let item1 = self.pop()?;
                     self.stack.push(Value::Tuple(vec![item1, item2]));
                 }
-                TUPLE3 => {
+                Opcode::Tuple3 => {
                     let item3 = self.pop()?;
                     let item2 = self.pop()?;
                     let item1 = self.pop()?;
                     self.stack.push(Value::Tuple(vec![item1, item2, item3]));
                 }
-                TUPLE => {
+                Opcode::Tuple => {
                     let items = self.pop_mark()?;
                     self.stack.push(Value::Tuple(items));
                 }
 
                 // Lists
-                EMPTY_LIST => self.stack.push(Value::List(Vec::new())),
-                LIST => {
+                Opcode::EmptyList => self.stack.push(Value::List(Vec::new())),
+                Opcode::List => {
                     let items = self.pop_mark()?;
                     self.stack.push(Value::List(items));
                 }
-                APPEND => {
+                Opcode::Append => {
                     let value = self.pop()?;
                     self.modify_list(|list| list.push(value))?;
                 }
-                APPENDS => {
+                Opcode::Appends => {
                     let items = self.pop_mark()?;
                     self.modify_list(|list| list.extend(items))?;
                 }
 
                 // Dicts
-                EMPTY_DICT => self.stack.push(Value::Dict(Vec::new())),
-                DICT => {
+                Opcode::EmptyDict => self.stack.push(Value::Dict(Vec::new())),
+                Opcode::Dict => {
                     let items = self.pop_mark()?;
                     let mut dict = Vec::with_capacity(items.len() / 2);
                     Self::extend_dict(&mut dict, items);
                     self.stack.push(Value::Dict(dict));
                 }
-                SETITEM => {
+                Opcode::SetItem => {
                     let value = self.pop()?;
                     let key = self.pop()?;
                     self.modify_dict(|dict| dict.push((key, value)))?;
                 }
-                SETITEMS => {
+                Opcode::SetItems => {
                     let items = self.pop_mark()?;
                     self.modify_dict(|dict| Self::extend_dict(dict, items))?;
                 }
 
                 // Sets and frozensets
-                EMPTY_SET => self.stack.push(Value::Set(Vec::new())),
-                FROZENSET => {
+                Opcode::EmptySet => self.stack.push(Value::Set(Vec::new())),
+                Opcode::FrozenSet => {
                     let items = self.pop_mark()?;
                     self.stack.push(Value::FrozenSet(items));
                 }
-                ADDITEMS => {
+                Opcode::AddItems => {
                     let items = self.pop_mark()?;
                     self.modify_set(|set| set.extend(items))?;
                 }
 
                 // Arbitrary module globals, used here for unpickling set and frozenset
                 // from protocols < 4
-                GLOBAL => {
+                Opcode::Global => {
                     let modname = self.read_line()?;
                     let globname = self.read_line()?;
                     let value = self.decode_global(modname, globname)?;
                     self.stack.push(value);
                 }
-                STACK_GLOBAL => {
+                Opcode::StackGlobal => {
                     let globname = match self.pop_resolve()? {
                         Value::String(string) => string.into_bytes(),
                         other => return Self::stack_error("string", &other, self.pos),
@@ -460,7 +465,7 @@ impl<R: Read> Deserializer<R> {
                     let value = self.decode_global(modname, globname)?;
                     self.stack.push(value);
                 }
-                REDUCE => {
+                Opcode::Reduce => {
                     let argtuple = match self.pop_resolve()? {
                         Value::Tuple(args) => args,
                         other => return Self::stack_error("tuple", &other, self.pos),
@@ -470,7 +475,7 @@ impl<R: Read> Deserializer<R> {
                 }
 
                 // Arbitrary classes - make a best effort attempt to recover some data
-                INST => {
+                Opcode::Inst => {
                     // pop module name and class name
                     for _ in 0..2 {
                         self.read_line()?;
@@ -480,28 +485,28 @@ impl<R: Read> Deserializer<R> {
                     // push empty dictionary instead of the class instance
                     self.stack.push(Value::Dict(Vec::new()));
                 }
-                OBJ => {
+                Opcode::Obj => {
                     // pop arguments to init
                     self.pop_mark()?;
                     // pop class object
                     self.pop()?;
                     self.stack.push(Value::Dict(Vec::new()));
                 }
-                NEWOBJ => {
+                Opcode::NewObj => {
                     // pop arguments and class object
                     for _ in 0..2 {
                         self.pop()?;
                     }
                     self.stack.push(Value::Dict(Vec::new()));
                 }
-                NEWOBJ_EX => {
+                Opcode::NewObjEx => {
                     // pop keyword args, arguments and class object
                     for _ in 0..3 {
                         self.pop()?;
                     }
                     self.stack.push(Value::Dict(Vec::new()));
                 }
-                BUILD => {
+                Opcode::Build => {
                     // The top-of-stack for BUILD is used either as the instance __dict__,
                     // or an argument for __setstate__, in which case it can be *any* type
                     // of object.  In both cases, we just replace the standin.
@@ -509,9 +514,6 @@ impl<R: Read> Deserializer<R> {
                     self.pop()?; // remove the object standin
                     self.stack.push(state);
                 }
-
-                // Unsupported opcodes
-                code => return self.error(ErrorCode::Unsupported(code as char)),
             }
         }
     }
@@ -1060,7 +1062,11 @@ impl<R: Read> Deserializer<R> {
     }
 
     fn error<T>(&self, reason: ErrorCode) -> Result<T> {
-        Err(Error::Eval(reason, self.pos))
+        Err(self.inner_error(reason))
+    }
+
+    fn inner_error(&self, reason: ErrorCode) -> Error {
+        Error::Eval(reason, self.pos)
     }
 
     fn convert_value(&mut self, value: Value) -> Result<value::Value> {
