@@ -237,7 +237,7 @@ mod value_tests {
     use std::iter::FromIterator;
     use num_bigint::BigInt;
     use rand::{RngCore, thread_rng};
-    use quickcheck::{QuickCheck, StdGen};
+    use quickcheck::{Gen, QuickCheck};
     use serde_json;
     use crate::{value_from_reader, value_to_vec, value_from_slice, to_vec, from_slice};
     use crate::{Value, HashableValue, SerOptions, DeOptions};
@@ -332,7 +332,7 @@ mod value_tests {
             let tripped = value_from_slice(&vec, Default::default()).unwrap();
             assert_eq!(original, tripped);
         }
-        QuickCheck::new().gen(StdGen::new(thread_rng(), 10))
+        QuickCheck::new().r#gen(Gen::new(10))
                          .tests(5000)
                          .quickcheck(roundtrip as fn(_));
     }

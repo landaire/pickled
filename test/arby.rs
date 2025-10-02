@@ -6,7 +6,7 @@
 
 //! QuickCheck Arbitrary instance for Value, and associated helpers.
 
-use std::i64;
+use std::{i64, ops::Range};
 use num_bigint::BigInt;
 use quickcheck::{Arbitrary, Gen, empty_shrinker};
 use rand::Rng;
@@ -14,9 +14,9 @@ use crate::{Value, HashableValue};
 
 const MAX_DEPTH: u32 = 1;
 
-fn gen_value<G: Gen>(g: &mut G, depth: u32) -> Value {
+fn gen_value(g: &mut Gen, depth: u32) -> Value {
     let upper = if depth > 0 { 12 } else { 7 };
-    match g.gen_range(0, upper) {
+    match gen_range(0..upper, g) {
         // leaves
         0  => Value::None,
         1  => Value::Bool(Arbitrary::arbitrary(g)),
@@ -37,21 +37,21 @@ fn gen_value<G: Gen>(g: &mut G, depth: u32) -> Value {
     }
 }
 
-fn gen_bigint<G: Gen>(g: &mut G) -> BigInt {
+fn gen_bigint(g: &mut Gen) -> BigInt {
     // We have to construct a value outside of i64 range, since other values
     // are unpickled as i64s instead of big ints.
-    let offset = BigInt::from(2) * BigInt::from(if g.gen() { i64::MIN } else { i64::MAX });
-    offset + BigInt::from(g.gen::<i64>())
+    let offset = BigInt::from(2) * BigInt::from(if bool::arbitrary(g) { i64::MIN } else { i64::MAX });
+    offset + BigInt::from(i64::arbitrary(g))
 }
 
-fn gen_vec<G: Gen>(g: &mut G, depth: u32) -> Vec<Value> {
-    let size = { let s = g.size(); g.gen_range(0, s) };
+fn gen_vec(g: &mut Gen, depth: u32) -> Vec<Value> {
+    let size = { let s = g.size(); gen_range(0..s, g)  };
     (0..size).map(|_| gen_value(g, depth)).collect()
 }
 
-fn gen_hvalue<G: Gen>(g: &mut G, depth: u32) -> HashableValue {
+fn gen_hvalue(g: &mut Gen, depth: u32) -> HashableValue {
     let upper = if depth > 0 { 9 } else { 7 };
-    match g.gen_range(0, upper) {
+    match gen_range(0..upper, g) {
         // leaves
         0  => HashableValue::None,
         1  => HashableValue::Bool(Arbitrary::arbitrary(g)),
@@ -70,13 +70,18 @@ fn gen_hvalue<G: Gen>(g: &mut G, depth: u32) -> HashableValue {
     }
 }
 
-fn gen_hvec<G: Gen>(g: &mut G, depth: u32) -> Vec<HashableValue> {
-    let size = { let s = g.size(); g.gen_range(0, s) };
+fn gen_hvec(g: &mut Gen, depth: u32) -> Vec<HashableValue> {
+    let size = { let s = g.size(); gen_range(0..s, g) };
     (0..size).map(|_| gen_hvalue(g, depth)).collect()
 }
 
+fn gen_range(r: Range<usize>, g: &mut Gen) -> usize {
+    let mut possibilities = r.into_iter().collect::<Vec<_>>();
+    g.choose(possibilities.as_slice()).unwrap().clone()
+}
+
 impl Arbitrary for Value {
-    fn arbitrary<G: Gen>(g: &mut G) -> Value {
+    fn arbitrary(g: &mut Gen) -> Value {
         gen_value(g, MAX_DEPTH)
     }
 
@@ -99,7 +104,7 @@ impl Arbitrary for Value {
 }
 
 impl Arbitrary for HashableValue {
-    fn arbitrary<G: Gen>(g: &mut G) -> HashableValue {
+    fn arbitrary(g: &mut Gen) -> HashableValue {
         gen_hvalue(g, MAX_DEPTH)
     }
 
