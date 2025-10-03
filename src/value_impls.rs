@@ -228,48 +228,51 @@ impl<'de: 'a, 'a> de::Deserializer<'de> for &'a mut Deserializer {
             Value::Bool(v) => visitor.visit_bool(v),
             Value::I64(v) => visitor.visit_i64(v),
             Value::Int(v) => {
-                if let Some(i) = v.to_i64() {
-                    visitor.visit_i64(i)
-                } else {
-                    Err(Error::Syntax(
-                        ErrorCode::InvalidValue("integer too large".into())))
-                }
-            },
+                        if let Some(i) = v.to_i64() {
+                            visitor.visit_i64(i)
+                        } else {
+                            Err(Error::Syntax(
+                                ErrorCode::InvalidValue("integer too large".into())))
+                        }
+                    },
             Value::F64(v) => visitor.visit_f64(v),
             Value::Bytes(v) => visitor.visit_byte_buf(v),
             Value::String(v) => visitor.visit_string(v),
             Value::List(v) => {
-                let len = v.len();
-                visitor.visit_seq(SeqDeserializer {
-                    de: self,
-                    iter: v.into_iter(),
-                    len,
-                })
-            },
+                        let len = v.len();
+                        visitor.visit_seq(SeqDeserializer {
+                            de: self,
+                            iter: v.into_iter(),
+                            len,
+                        })
+                    },
             Value::Tuple(v) => {
-                visitor.visit_seq(SeqDeserializer {
-                    de: self,
-                    len: v.len(),
-                    iter: v.into_iter(),
-                })
-            }
+                        visitor.visit_seq(SeqDeserializer {
+                            de: self,
+                            len: v.len(),
+                            iter: v.into_iter(),
+                        })
+                    }
             Value::Set(v) | Value::FrozenSet(v) => {
-                let v: Vec<_> = v.into_iter().map(HashableValue::into_value).collect();
-                visitor.visit_seq(SeqDeserializer {
-                    de: self,
-                    len: v.len(),
-                    iter: v.into_iter(),
-                })
-            },
+                        let v: Vec<_> = v.into_iter().map(HashableValue::into_value).collect();
+                        visitor.visit_seq(SeqDeserializer {
+                            de: self,
+                            len: v.len(),
+                            iter: v.into_iter(),
+                        })
+                    },
             Value::Dict(v) => {
-                let len = v.len();
-                visitor.visit_map(MapDeserializer {
-                    de: self,
-                    iter: v.into_iter(),
-                    value: None,
-                    len,
-                })
-            },
+                        let len = v.len();
+                        visitor.visit_map(MapDeserializer {
+                            de: self,
+                            iter: v.into_iter(),
+                            value: None,
+                            len,
+                        })
+                    },
+Value::Shared(ref_cell) => {
+    panic!("deserialize_any for shared");
+},
         }
     }
 

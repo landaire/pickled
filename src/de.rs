@@ -16,13 +16,15 @@ use num_bigint::{BigInt, Sign};
 use num_traits::ToPrimitive;
 use serde::de::Visitor;
 use serde::{de, forward_to_deserialize_any};
+use std::cell::RefCell;
 use std::char;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::convert::TryFrom;
 use std::io;
 use std::io::{BufRead, BufReader, Read};
 use std::iter::FusedIterator;
 use std::mem;
+use std::rc::Rc;
 use std::str;
 use std::str::FromStr;
 use std::vec;
@@ -72,6 +74,7 @@ enum Value {
     Set(Vec<Value>),
     FrozenSet(Vec<Value>),
     Dict(Vec<(Value, Value)>),
+    Shared(Rc<RefCell<Value>>),
 }
 
 /// Options for deserializing.
@@ -119,6 +122,7 @@ pub struct Deserializer<R: Read> {
     memo: BTreeMap<MemoId, (Value, i32)>, // pickle memo (value, number of refs)
     stack: Vec<Value>,                    // topmost items on the stack
     stacks: Vec<Vec<Value>>,              // items further down the stack, between MARKs
+    converted_rc: HashMap<usize, Rc<RefCell<value::Value>>>, // shared items that have already been converted
 }
 
 impl<R: Read> Deserializer<R> {
@@ -132,6 +136,7 @@ impl<R: Read> Deserializer<R> {
             stack: Vec::with_capacity(128),
             stacks: Vec::with_capacity(16),
             options,
+            converted_rc: Default::default(),
         }
     }
 
@@ -210,8 +215,7 @@ impl<R: Read> Deserializer<R> {
     fn parse_value(&mut self) -> Result<Value> {
         loop {
             let value = self.read_byte()?;
-            let opcode = Opcode::try_from(value)
-                .map_err(|code| self.inner_error(code))?;
+            let opcode = Opcode::try_from(value).map_err(|code| self.inner_error(code))?;
 
             match opcode {
                 // Specials
@@ -521,7 +525,7 @@ impl<R: Read> Deserializer<R> {
                     let state = self.pop()?;
                     let obj = self.pop()?; // remove the object standin
 
-                    let standin = self.resolve(Some(obj.clone()));
+                    let _standin = self.resolve(Some(obj.clone()));
 
                     if let Value::MemoRef(id) = obj {
                         self.memoize(id, state.clone());
@@ -604,7 +608,8 @@ impl<R: Read> Deserializer<R> {
                 None => return Err(Error::Eval(ErrorCode::MissingMemo(id), self.pos)),
             };
         }
-        self.memo.insert(memo_id, (item, 1));
+        self.memo
+            .insert(memo_id, (Value::Shared(Rc::new(RefCell::new(item))), 1));
         Ok(())
     }
 
@@ -934,12 +939,25 @@ impl<R: Read> Deserializer<R> {
     {
         let pos = self.pos;
         let top = self.top()?;
-        if let Value::List(ref mut list) = *top {
-            f(list);
-            Ok(())
-        } else {
-            Self::stack_error("list", top, pos)
+
+        match *top {
+            Value::List(ref mut list) => {
+                f(list);
+                return Ok(());
+            }
+            Value::Shared(ref list) => {
+                let mut inner = list.borrow_mut();
+                if let Value::List(list) = &mut *inner {
+                    f(list);
+                    return Ok(());
+                }
+            }
+            _ => {
+                // Fallthrough to error
+            }
         }
+
+        Self::stack_error("list", top, pos)
     }
 
     // Push items from a (key, value, key, value) flattened list onto a (key, value) vec.
@@ -960,12 +978,24 @@ impl<R: Read> Deserializer<R> {
     {
         let pos = self.pos;
         let top = self.top()?;
-        if let Value::Dict(ref mut dict) = *top {
-            f(dict);
-            Ok(())
-        } else {
-            Self::stack_error("dict", top, pos)
+        match *top {
+            Value::Dict(ref mut dict) => {
+                f(dict);
+                return Ok(());
+            }
+            Value::Shared(ref dict) => {
+                let mut inner = dict.borrow_mut();
+                if let Value::Dict(dict) = &mut *inner {
+                    f(dict);
+                    return Ok(());
+                }
+            }
+            _ => {
+                // Fallthrough to error
+            }
         }
+
+        Self::stack_error("dict", top, pos)
     }
 
     // Modify the stack-top set.
@@ -996,15 +1026,13 @@ impl<R: Read> Deserializer<R> {
                 Value::Global(Global::Bytearray)
             }
             (b"__builtin__", b"int") | (b"builtins", b"int") => Value::Global(Global::Int),
-            (b"copy_reg", b"_reconstructor") => {
-                Value::Global(Global::Reconstructor)
-            }
-            _ => {
-                Value::Global(Global::Other(
-                    String::from_utf8(modname).map_err(|_| self.inner_error(ErrorCode::StringNotUTF8))?,
-                    String::from_utf8(globname).map_err(|_| self.inner_error(ErrorCode::StringNotUTF8))?
-                ))
-            }
+            (b"copy_reg", b"_reconstructor") => Value::Global(Global::Reconstructor),
+            _ => Value::Global(Global::Other(
+                String::from_utf8(modname)
+                    .map_err(|_| self.inner_error(ErrorCode::StringNotUTF8))?,
+                String::from_utf8(globname)
+                    .map_err(|_| self.inner_error(ErrorCode::StringNotUTF8))?,
+            )),
         };
         Ok(value)
     }
@@ -1082,7 +1110,7 @@ impl<R: Read> Deserializer<R> {
                 let _args = self.resolve(argtuple.pop());
                 let _func = self.resolve(argtuple.pop());
 
-                let value = Value::Dict(Vec::new());
+                let value = Value::Global(Global::Reconstructor);
 
                 self.stack.push(value);
                 Ok(())
@@ -1093,6 +1121,25 @@ impl<R: Read> Deserializer<R> {
                 // class is instantiated.
                 self.stack
                     .push(Value::Global(Global::Other(modname, classname)));
+                Ok(())
+            }
+            Value::Shared(shared) => {
+                let inner = shared.borrow();
+
+                // le hack
+                self.reduce_global(inner.clone(), argtuple)?;
+
+                drop(inner);
+
+                let reduced_value = self.stack.pop().unwrap();
+
+                let mut inner = shared.borrow_mut();
+                *inner = reduced_value;
+
+                drop(inner);
+
+                self.stack.push(Value::Shared(Rc::clone(&shared)));
+
                 Ok(())
             }
             other => Self::stack_error("global reference", &other, self.pos),
@@ -1174,6 +1221,24 @@ impl<R: Read> Deserializer<R> {
                     Err(Error::Syntax(ErrorCode::UnresolvedGlobal))
                 }
             }
+            Value::Shared(ref_cell) => {
+                let inner = ref_cell.borrow_mut();
+
+                let inner_ptr = ref_cell.as_ptr().expose_provenance();
+
+                if let Some(converted) = self.converted_rc.get(&inner_ptr) {
+                    Ok(value::Value::Shared(Rc::clone(converted)))
+                } else {
+                    let converted = Rc::new(RefCell::new(
+                        self.convert_value(inner.clone())
+                            .expect("failed to convert shared value")
+                    ));
+
+                    self.converted_rc.insert(inner_ptr, Rc::clone(&converted));
+
+                    Ok(value::Value::Shared(converted))
+                }
+            }
         }
     }
 }
@@ -1238,6 +1303,9 @@ impl<'de: 'a, 'a, R: Read> de::Deserializer<'de> for &'a mut Deserializer<R> {
                 } else {
                     Err(Error::Syntax(ErrorCode::UnresolvedGlobal))
                 }
+            }
+            Value::Shared(inner) => {
+                panic!("deserializing shared is not supported");
             }
         }
     }

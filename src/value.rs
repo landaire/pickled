@@ -8,9 +8,11 @@
 
 use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive};
+use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::rc::Rc;
 
 pub use crate::value_impls::{from_value, to_value};
 
@@ -51,6 +53,8 @@ pub enum Value {
     FrozenSet(BTreeSet<HashableValue>),
     /// Dictionary (map)
     Dict(BTreeMap<HashableValue, Value>),
+    /// Shared object
+    Shared(Rc<RefCell<Value>>),
 }
 
 /// Represents all primitive builtin Python values that can be contained
@@ -81,6 +85,8 @@ pub enum HashableValue {
     Tuple(Vec<HashableValue>),
     /// Frozen (immutable) set
     FrozenSet(BTreeSet<HashableValue>),
+    /// Shared object
+    Shared(Rc<RefCell<HashableValue>>),
 }
 
 fn values_to_hashable(values: Vec<Value>) -> Result<Vec<HashableValue>, Error> {
@@ -105,6 +111,18 @@ impl Value {
             Value::String(s) => Ok(HashableValue::String(s)),
             Value::FrozenSet(v) => Ok(HashableValue::FrozenSet(v)),
             Value::Tuple(v) => values_to_hashable(v).map(HashableValue::Tuple),
+            Value::Shared(shared) => {
+                if Rc::strong_count(&shared) == 1 {
+                    if let Some(inner) = Rc::into_inner(shared) {
+                        let inner = RefCell::into_inner(inner);
+                        inner.into_hashable()
+                    } else {
+                        panic!("TOCTOU while trying to serialize Shared")
+                    }
+                } else {
+                    shared.borrow().clone().into_hashable()
+                }
+            }
             _ => Err(Error::Syntax(ErrorCode::ValueNotHashable)),
         }
     }
@@ -123,6 +141,18 @@ impl HashableValue {
             HashableValue::String(s) => Value::String(s),
             HashableValue::FrozenSet(v) => Value::FrozenSet(v),
             HashableValue::Tuple(v) => Value::Tuple(hashable_to_values(v)),
+            HashableValue::Shared(shared) => {
+                if Rc::strong_count(&shared) == 1 {
+                    if let Some(inner) = Rc::into_inner(shared) {
+                        let inner = RefCell::into_inner(inner);
+                        inner.into_value()
+                    } else {
+                        panic!("TOCTOU while trying to serialize Shared")
+                    }
+                } else {
+                    shared.borrow().clone().into_value()
+                }
+            }
         }
     }
 }
@@ -158,7 +188,7 @@ impl fmt::Display for Value {
             Value::I64(i) => write!(f, "{i}"),
             Value::Int(ref i) => write!(f, "{i}"),
             Value::F64(v) => write!(f, "{v}"),
-            Value::Bytes(ref b) => write!(f, "b{b:?}"), //
+            Value::Bytes(ref b) => write!(f, "b{b:?}"),
             Value::String(ref s) => write!(f, "{s:?}"),
             Value::List(ref v) => write_elements(f, v.iter(), "[", "]", v.len(), false),
             Value::Tuple(ref v) => write_elements(f, v.iter(), "(", ")", v.len(), v.len() == 1),
@@ -183,6 +213,10 @@ impl fmt::Display for Value {
                 }
                 write!(f, "}}")
             }
+            Value::Shared(ref ref_cell) => {
+                let inner = ref_cell.borrow();
+                write!(f, "{}", inner)
+            }
         }
     }
 }
@@ -195,13 +229,17 @@ impl fmt::Display for HashableValue {
             HashableValue::I64(i) => write!(f, "{i}"),
             HashableValue::Int(ref i) => write!(f, "{i}"),
             HashableValue::F64(v) => write!(f, "{v}"),
-            HashableValue::Bytes(ref b) => write!(f, "b{b:?}"), //
+            HashableValue::Bytes(ref b) => write!(f, "b{b:?}"),
             HashableValue::String(ref s) => write!(f, "{s:?}"),
             HashableValue::Tuple(ref v) => {
                 write_elements(f, v.iter(), "(", ")", v.len(), v.len() == 1)
             }
             HashableValue::FrozenSet(ref v) => {
                 write_elements(f, v.iter(), "frozenset([", "])", v.len(), false)
+            }
+            HashableValue::Shared(ref ref_cell) => {
+                let inner = ref_cell.borrow();
+                write!(f, "{}", inner)
             }
         }
     }
@@ -289,6 +327,25 @@ impl Ord for HashableValue {
                 Tuple(ref t2) => t.cmp(t2),
                 _ => Ordering::Greater,
             },
+            Shared(ref ref_cell) => {
+                match other {
+                    Shared(other_ref_cell) => {
+                        // Avoid deadlocks
+                        if Rc::ptr_eq(&ref_cell, other_ref_cell) {
+                            return Ordering::Equal;
+                        }
+
+                        let this_inner = ref_cell.borrow();
+                        let other_inner = other_ref_cell.borrow();
+
+                        this_inner.cmp(&other_inner)
+                    }
+                    other_value => {
+                        let this_inner = ref_cell.borrow();
+                        this_inner.cmp(other_value)
+                    }
+                }
+            }
         }
     }
 }

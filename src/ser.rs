@@ -102,7 +102,6 @@ impl<W: io::Write> Serializer<W> {
     fn serialize_hashable_value(&mut self, value: &HashableValue) -> Result<()> {
         use serde::Serializer;
         match *value {
-            // Cases covered by the Serializer trait
             HashableValue::None    => self.serialize_unit(),
             HashableValue::Bool(b) => self.serialize_bool(b),
             HashableValue::I64(i)  => self.serialize_i64(i),
@@ -112,14 +111,17 @@ impl<W: io::Write> Serializer<W> {
             HashableValue::Int(ref i) => self.serialize_bigint(i),
             HashableValue::FrozenSet(ref s) => self.serialize_set(s, b"frozenset"),
             HashableValue::Tuple(ref t) =>
-                self.serialize_tuplevalue(t, |slf, v| slf.serialize_hashable_value(v)),
+                        self.serialize_tuplevalue(t, |slf, v| slf.serialize_hashable_value(v)),
+            HashableValue::Shared(ref ref_cell) => {
+                let inner = ref_cell.borrow();
+                self.serialize_hashable_value(&inner)
+            },
         }
     }
 
     fn serialize_value(&mut self, value: &Value) -> Result<()> {
         use serde::Serializer;
         match *value {
-            // Cases covered by the Serializer trait
             Value::None    => self.serialize_unit(),
             Value::Bool(b) => self.serialize_bool(b),
             Value::I64(i)  => self.serialize_i64(i),
@@ -127,45 +129,47 @@ impl<W: io::Write> Serializer<W> {
             Value::Bytes(ref b) => self.serialize_bytes(b),
             Value::String(ref s) => self.serialize_str(s),
             Value::List(ref l) => {
-                self.write_opcode(EMPTY_LIST)?;
-                for chunk in l.chunks(1000) {
-                    self.write_opcode(MARK)?;
-                    for item in chunk {
-                        self.serialize_value(item)?;
-                    }
-                    self.write_opcode(APPENDS)?;
-                }
-                Ok(())
-            },
+                        self.write_opcode(EMPTY_LIST)?;
+                        for chunk in l.chunks(1000) {
+                            self.write_opcode(MARK)?;
+                            for item in chunk {
+                                self.serialize_value(item)?;
+                            }
+                            self.write_opcode(APPENDS)?;
+                        }
+                        Ok(())
+                    },
             Value::Dict(ref d) => {
-                self.write_opcode(EMPTY_DICT)?;
-                self.write_opcode(MARK)?;
-                for (n, (key, value)) in d.iter().enumerate() {
-                    if n % 1000 == 999 {
-                        self.write_opcode(SETITEMS)?;
+                        self.write_opcode(EMPTY_DICT)?;
                         self.write_opcode(MARK)?;
+                        for (n, (key, value)) in d.iter().enumerate() {
+                            if n % 1000 == 999 {
+                                self.write_opcode(SETITEMS)?;
+                                self.write_opcode(MARK)?;
+                            }
+                            self.serialize_hashable_value(key)?;
+                            self.serialize_value(value)?;
+                        }
+                        self.write_opcode(SETITEMS)?;
+                        Ok(())
                     }
-                    self.serialize_hashable_value(key)?;
-                    self.serialize_value(value)?;
-                }
-                self.write_opcode(SETITEMS)?;
-                Ok(())
-            }
-
-            // Others
             Value::Int(ref i) => {
-                self.serialize_bigint(i)
-            }
+                        self.serialize_bigint(i)
+                    }
             Value::Tuple(ref t) => {
-                self.serialize_tuplevalue(t, |slf, v| slf.serialize_value(v))
-            },
+                        self.serialize_tuplevalue(t, |slf, v| slf.serialize_value(v))
+                    },
             Value::Set(ref s) => {
-                self.serialize_set(s, b"set")
-            },
+                        self.serialize_set(s, b"set")
+                    },
             Value::FrozenSet(ref s) => {
-                self.serialize_set(s, b"frozenset")
-            }
-        }
+                        self.serialize_set(s, b"frozenset")
+                    }
+            Value::Shared(ref ref_cell) => {
+                let inner = ref_cell.borrow();
+                self.serialize_value(&inner)
+            },
+                    }
     }
 
     fn serialize_bigint(&mut self, i: &BigInt) -> Result<()> {
