@@ -38,13 +38,15 @@ macro_rules! hpyobj {
 }
 
 mod struct_tests {
+    use crate::{
+        HashableValue, SerOptions, Value, from_slice, from_value, to_value, to_vec,
+        value_from_slice, value_to_vec,
+    };
+    use serde::{de, ser};
+    use serde_derive::{Deserialize, Serialize};
+    use std::collections::BTreeMap;
     use std::fmt;
     use std::iter::FromIterator;
-    use std::collections::BTreeMap;
-    use serde::{ser, de};
-    use serde_derive::{Serialize, Deserialize};
-    use crate::{HashableValue, SerOptions, Value, from_slice, from_value, to_value,
-                to_vec, value_from_slice, value_to_vec};
 
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
     struct Inner {
@@ -77,7 +79,8 @@ mod struct_tests {
     }
 
     fn test_encode_ok<T>(value: T, target: Value)
-        where T: PartialEq + ser::Serialize,
+    where
+        T: PartialEq + ser::Serialize,
     {
         // Test serialization via pickle.
         let vec = to_vec(&value, Default::default()).unwrap();
@@ -89,7 +92,8 @@ mod struct_tests {
     }
 
     fn test_encode_ok_with_opt<T>(value: T, target: Value, options: SerOptions)
-        where T: PartialEq + ser::Serialize,
+    where
+        T: PartialEq + ser::Serialize,
     {
         let vec = to_vec(&value, options).unwrap();
         let py_val: Value = value_from_slice(&vec, Default::default()).unwrap();
@@ -97,7 +101,8 @@ mod struct_tests {
     }
 
     fn test_decode_ok<'de, T>(pyvalue: Value, target: T)
-        where T: PartialEq + fmt::Debug + de::Deserialize<'de>,
+    where
+        T: PartialEq + fmt::Debug + de::Deserialize<'de>,
     {
         // Test deserialization from pickle.
         let vec = value_to_vec(&pyvalue, Default::default()).unwrap();
@@ -110,144 +115,214 @@ mod struct_tests {
 
     #[test]
     fn encode_types() {
-        test_encode_ok((), pyobj!(n=None));
-        test_encode_ok(true, pyobj!(b=True));
-        test_encode_ok(None::<i32>, pyobj!(n=None));
-        test_encode_ok(Some(false), pyobj!(b=False));
-        test_encode_ok(10000000000_i64, pyobj!(i=10000000000));
-        test_encode_ok(4.5_f64, pyobj!(f=4.5));
-        test_encode_ok('ä', pyobj!(s="ä"));
-        test_encode_ok("string", pyobj!(s="string"));
+        test_encode_ok((), pyobj!(n = None));
+        test_encode_ok(true, pyobj!(b = True));
+        test_encode_ok(None::<i32>, pyobj!(n = None));
+        test_encode_ok(Some(false), pyobj!(b = False));
+        test_encode_ok(10000000000_i64, pyobj!(i = 10000000000));
+        test_encode_ok(4.5_f64, pyobj!(f = 4.5));
+        test_encode_ok('ä', pyobj!(s = "ä"));
+        test_encode_ok("string", pyobj!(s = "string"));
         // serde doesn't encode into bytes...
-        test_encode_ok(&b"\x00\x01"[..], pyobj!(l=[i=0, i=1]));
-        test_encode_ok(vec![1, 2, 3], pyobj!(l=[i=1, i=2, i=3]));
-        test_encode_ok((1, 2, 3), pyobj!(t=(i=1, i=2, i=3)));
-        test_encode_ok(&[1, 2, 3][..], pyobj!(l=[i=1, i=2, i=3]));
+        test_encode_ok(&b"\x00\x01"[..], pyobj!(l = [i = 0, i = 1]));
+        test_encode_ok(vec![1, 2, 3], pyobj!(l = [i = 1, i = 2, i = 3]));
+        test_encode_ok((1, 2, 3), pyobj!(t = (i = 1, i = 2, i = 3)));
+        test_encode_ok(&[1, 2, 3][..], pyobj!(l = [i = 1, i = 2, i = 3]));
         // serde 1.0: fixed-size arrays are now tuples...
-        test_encode_ok([1, 2, 3], pyobj!(t=(i=1, i=2, i=3)));
-        test_encode_ok(BTreeMap::from_iter(vec![(1, 2), (3, 4)]),
-                       pyobj!(d={i=1 => i=2, i=3 => i=4}));
+        test_encode_ok([1, 2, 3], pyobj!(t = (i = 1, i = 2, i = 3)));
+        test_encode_ok(
+            BTreeMap::from_iter(vec![(1, 2), (3, 4)]),
+            pyobj!(d={i=1 => i=2, i=3 => i=4}),
+        );
     }
 
     #[test]
     fn encode_struct() {
-        test_encode_ok(Unit,
-                       pyobj!(n=None));
-        test_encode_ok(Newtype(42),
-                       pyobj!(i=42));
-        test_encode_ok(Tuple(42, false),
-                       pyobj!(t=(i=42, b=False)));
-        test_encode_ok(Inner { a: (), b: 32, c: vec!["doc".into()] },
-                       pyobj!(d={s="a" => n=None, s="b" => i=32,
-                                 s="c" => l=[s="doc"]}));
+        test_encode_ok(Unit, pyobj!(n = None));
+        test_encode_ok(Newtype(42), pyobj!(i = 42));
+        test_encode_ok(Tuple(42, false), pyobj!(t = (i = 42, b = False)));
+        test_encode_ok(
+            Inner {
+                a: (),
+                b: 32,
+                c: vec!["doc".into()],
+            },
+            pyobj!(d={s="a" => n=None, s="b" => i=32,
+                                 s="c" => l=[s="doc"]}),
+        );
     }
 
     #[test]
     fn encode_enum() {
-        test_encode_ok(Animal::Dog,
-                       pyobj!(s="Dog"));
-        test_encode_ok(Animal::AntHive(vec!["ant".into(), "aunt".into()]),
-                       pyobj!(d={s="AntHive" => l=[s="ant", s="aunt"]}));
-        test_encode_ok(Animal::Frog("Henry".into(), vec![1, 5]),
-                       pyobj!(d={s="Frog" => l=[s="Henry", l=[i=1, i=5]]}));
-        test_encode_ok(Animal::Cat { age: 5, name: "Molyneux".into() },
-                       pyobj!(d={s="Cat" => d={s="age" => i=5, s="name" => s="Molyneux"}}));
+        test_encode_ok(Animal::Dog, pyobj!(s = "Dog"));
+        test_encode_ok(
+            Animal::AntHive(vec!["ant".into(), "aunt".into()]),
+            pyobj!(d={s="AntHive" => l=[s="ant", s="aunt"]}),
+        );
+        test_encode_ok(
+            Animal::Frog("Henry".into(), vec![1, 5]),
+            pyobj!(d={s="Frog" => l=[s="Henry", l=[i=1, i=5]]}),
+        );
+        test_encode_ok(
+            Animal::Cat {
+                age: 5,
+                name: "Molyneux".into(),
+            },
+            pyobj!(d={s="Cat" => d={s="age" => i=5, s="name" => s="Molyneux"}}),
+        );
     }
 
     #[test]
     fn encode_enum_compat() {
-        test_encode_ok_with_opt(Animal::Dog,
-                                pyobj!(t=(s="Dog")),
-                                SerOptions::new().compat_enum_repr());
-        test_encode_ok_with_opt(Animal::AntHive(vec!["ant".into(), "aunt".into()]),
-                                pyobj!(t=(s="AntHive", l=[s="ant", s="aunt"])),
-                                SerOptions::new().compat_enum_repr());
-        test_encode_ok_with_opt(Animal::Frog("Henry".into(), vec![1, 5]),
-                                pyobj!(t=(s="Frog", l=[s="Henry", l=[i=1, i=5]])),
-                                SerOptions::new().compat_enum_repr());
-        test_encode_ok_with_opt(Animal::Cat { age: 5, name: "Molyneux".into() },
-                                pyobj!(t=(s="Cat", d={s="age" => i=5, s="name" => s="Molyneux"})),
-                                SerOptions::new().compat_enum_repr());
+        test_encode_ok_with_opt(
+            Animal::Dog,
+            pyobj!(t = (s = "Dog")),
+            SerOptions::new().compat_enum_repr(),
+        );
+        test_encode_ok_with_opt(
+            Animal::AntHive(vec!["ant".into(), "aunt".into()]),
+            pyobj!(t = (s = "AntHive", l = [s = "ant", s = "aunt"])),
+            SerOptions::new().compat_enum_repr(),
+        );
+        test_encode_ok_with_opt(
+            Animal::Frog("Henry".into(), vec![1, 5]),
+            pyobj!(t = (s = "Frog", l = [s = "Henry", l = [i = 1, i = 5]])),
+            SerOptions::new().compat_enum_repr(),
+        );
+        test_encode_ok_with_opt(
+            Animal::Cat {
+                age: 5,
+                name: "Molyneux".into(),
+            },
+            pyobj!(t=(s="Cat", d={s="age" => i=5, s="name" => s="Molyneux"})),
+            SerOptions::new().compat_enum_repr(),
+        );
     }
 
     #[test]
     fn decode_types() {
-        test_decode_ok(pyobj!(n=None), ());
-        test_decode_ok(pyobj!(b=True), true);
-        test_decode_ok(pyobj!(b=True), Some(true));
-        test_decode_ok::<Option<bool>>(pyobj!(n=None), None);
-        test_decode_ok(pyobj!(i=10000000000), 10000000000_i64);
-        test_decode_ok(pyobj!(f=4.5), 4.5_f64);
-        test_decode_ok(pyobj!(s="ä"), 'ä');
-        test_decode_ok(pyobj!(s="string"), String::from("string"));
+        test_decode_ok(pyobj!(n = None), ());
+        test_decode_ok(pyobj!(b = True), true);
+        test_decode_ok(pyobj!(b = True), Some(true));
+        test_decode_ok::<Option<bool>>(pyobj!(n = None), None);
+        test_decode_ok(pyobj!(i = 10000000000), 10000000000_i64);
+        test_decode_ok(pyobj!(f = 4.5), 4.5_f64);
+        test_decode_ok(pyobj!(s = "ä"), 'ä');
+        test_decode_ok(pyobj!(s = "string"), String::from("string"));
         // Vec<u8> doesn't decode from serde bytes...
-        test_decode_ok(pyobj!(bb=b"bytes"), String::from("bytes"));
-        test_decode_ok(pyobj!(l=[i=1, i=2, i=3]), vec![1, 2, 3]);
-        test_decode_ok(pyobj!(t=(i=1, i=2, i=3)), (1, 2, 3));
-        test_decode_ok(pyobj!(l=[i=1, i=2, i=3]), [1, 2, 3]);
-        test_decode_ok(pyobj!(d={i=1 => i=2, i=3 => i=4}),
-                       BTreeMap::from_iter(vec![(1, 2), (3, 4)]));
+        test_decode_ok(pyobj!(bb = b"bytes"), String::from("bytes"));
+        test_decode_ok(pyobj!(l = [i = 1, i = 2, i = 3]), vec![1, 2, 3]);
+        test_decode_ok(pyobj!(t = (i = 1, i = 2, i = 3)), (1, 2, 3));
+        test_decode_ok(pyobj!(l = [i = 1, i = 2, i = 3]), [1, 2, 3]);
+        test_decode_ok(
+            pyobj!(d={i=1 => i=2, i=3 => i=4}),
+            BTreeMap::from_iter(vec![(1, 2), (3, 4)]),
+        );
     }
 
     #[test]
     fn decode_struct() {
-        test_decode_ok(pyobj!(n=None),
-                       Unit);
-        test_decode_ok(pyobj!(i=42),
-                       Newtype(42));
-        test_decode_ok(pyobj!(t=(i=42, b=False)),
-                       Tuple(42, false));
-        test_decode_ok(pyobj!(d={s="a" => n=None, s="b" => i=32, s="c" => l=[s="doc"]}),
-                       Inner { a: (), b: 32, c: vec!["doc".into()] });
+        test_decode_ok(pyobj!(n = None), Unit);
+        test_decode_ok(pyobj!(i = 42), Newtype(42));
+        test_decode_ok(pyobj!(t = (i = 42, b = False)), Tuple(42, false));
+        test_decode_ok(
+            pyobj!(d={s="a" => n=None, s="b" => i=32, s="c" => l=[s="doc"]}),
+            Inner {
+                a: (),
+                b: 32,
+                c: vec!["doc".into()],
+            },
+        );
     }
 
     #[test]
     fn decode_enum() {
         // tuple representation
-        test_decode_ok(pyobj!(t=(s="Dog")),
-                       Animal::Dog);
-        test_decode_ok(pyobj!(t=(s="AntHive", l=[s="ant", s="aunt"])),
-                       Animal::AntHive(vec!["ant".into(), "aunt".into()]));
-        test_decode_ok(pyobj!(t=(s="Frog", l=[s="Henry", l=[i=1, i=5]])),
-                       Animal::Frog("Henry".into(), vec![1, 5]));
-        test_decode_ok(pyobj!(t=(s="Cat", d={s="age" => i=5, s="name" => s="Molyneux"})),
-                       Animal::Cat { age: 5, name: "Molyneux".into() });
-        test_decode_ok(pyobj!(l=[t=(s="Dog"), t=(s="Dog"),
+        test_decode_ok(pyobj!(t = (s = "Dog")), Animal::Dog);
+        test_decode_ok(
+            pyobj!(t = (s = "AntHive", l = [s = "ant", s = "aunt"])),
+            Animal::AntHive(vec!["ant".into(), "aunt".into()]),
+        );
+        test_decode_ok(
+            pyobj!(t = (s = "Frog", l = [s = "Henry", l = [i = 1, i = 5]])),
+            Animal::Frog("Henry".into(), vec![1, 5]),
+        );
+        test_decode_ok(
+            pyobj!(t=(s="Cat", d={s="age" => i=5, s="name" => s="Molyneux"})),
+            Animal::Cat {
+                age: 5,
+                name: "Molyneux".into(),
+            },
+        );
+        test_decode_ok(
+            pyobj!(l=[t=(s="Dog"), t=(s="Dog"),
                                  t=(s="Cat", d={s="age" => i=5, s="name" => s="?"})]),
-                       vec![Animal::Dog, Animal::Dog, Animal::Cat { age: 5, name: "?".into() }]);
+            vec![
+                Animal::Dog,
+                Animal::Dog,
+                Animal::Cat {
+                    age: 5,
+                    name: "?".into(),
+                },
+            ],
+        );
 
         // string/dict representation
-        test_decode_ok(pyobj!(s="Dog"),
-                       Animal::Dog);
-        test_decode_ok(pyobj!(d={s="AntHive" => l=[s="ant", s="aunt"]}),
-                       Animal::AntHive(vec!["ant".into(), "aunt".into()]));
-        test_decode_ok(pyobj!(d={s="Frog" => l=[s="Henry", l=[i=1, i=5]]}),
-                       Animal::Frog("Henry".into(), vec![1, 5]));
-        test_decode_ok(pyobj!(d={s="Cat" => d={s="age" => i=5, s="name" => s="Molyneux"}}),
-                       Animal::Cat { age: 5, name: "Molyneux".into() });
-        test_decode_ok(pyobj!(l=[s="Dog", s="Dog",
+        test_decode_ok(pyobj!(s = "Dog"), Animal::Dog);
+        test_decode_ok(
+            pyobj!(d={s="AntHive" => l=[s="ant", s="aunt"]}),
+            Animal::AntHive(vec!["ant".into(), "aunt".into()]),
+        );
+        test_decode_ok(
+            pyobj!(d={s="Frog" => l=[s="Henry", l=[i=1, i=5]]}),
+            Animal::Frog("Henry".into(), vec![1, 5]),
+        );
+        test_decode_ok(
+            pyobj!(d={s="Cat" => d={s="age" => i=5, s="name" => s="Molyneux"}}),
+            Animal::Cat {
+                age: 5,
+                name: "Molyneux".into(),
+            },
+        );
+        test_decode_ok(
+            pyobj!(l=[s="Dog", s="Dog",
                                  d={s="Cat" => d={s="age" => i=5, s="name" => s="?"}}]),
-                       vec![Animal::Dog, Animal::Dog, Animal::Cat { age: 5, name: "?".into() }]);
+            vec![
+                Animal::Dog,
+                Animal::Dog,
+                Animal::Cat {
+                    age: 5,
+                    name: "?".into(),
+                },
+            ],
+        );
     }
 }
 
 mod value_tests {
-    use std::fs::File;
-    use std::collections::{BTreeMap, BTreeSet};
-    use std::iter::FromIterator;
-    use num_bigint::BigInt;
-    use rand::{RngCore, thread_rng};
-    use quickcheck::{Gen, QuickCheck};
-    use serde_json;
-    use crate::{value_from_reader, value_to_vec, value_from_slice, to_vec, from_slice};
-    use crate::{Value, HashableValue, SerOptions, DeOptions};
     use crate::Deserializer;
     use crate::error::{Error, ErrorCode};
+    use crate::{DeOptions, HashableValue, SerOptions, Value};
+    use crate::{from_slice, to_vec, value_from_reader, value_from_slice, value_to_vec};
+    use num_bigint::BigInt;
+    use quickcheck::{Gen, QuickCheck};
+    use rand::{RngCore, thread_rng};
+    use serde_json;
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::fs::File;
+    use std::iter::FromIterator;
 
     // combinations of (python major, pickle proto) to test
     const TEST_CASES: &[(u32, u32)] = &[
-        (2, 0), (2, 1), (2, 2),
-        (3, 0), (3, 1), (3, 2), (3, 3), (3, 4), (3, 5),
+        (2, 0),
+        (2, 1),
+        (2, 2),
+        (3, 0),
+        (3, 1),
+        (3, 2),
+        (3, 3),
+        (3, 4),
+        (3, 5),
     ];
 
     fn get_test_object(pyver: u32) -> Value {
@@ -273,12 +348,14 @@ mod value_tests {
         // Unfortunately, __dict__ keys are strings and so are pickled
         // differently depending on major version.
         match &mut obj {
-            Value::Dict(map) => if pyver == 2 {
-                map.insert(hpyobj!(i=7), pyobj!(d={bb=b"attr" => i=5}));
-            } else {
-                map.insert(hpyobj!(i=7), pyobj!(d={s="attr" => i=5}));
-            },
-            _ => unreachable!()
+            Value::Dict(map) => {
+                if pyver == 2 {
+                    map.insert(hpyobj!(i = 7), pyobj!(d={bb=b"attr" => i=5}));
+                } else {
+                    map.insert(hpyobj!(i = 7), pyobj!(d={s="attr" => i=5}));
+                }
+            }
+            _ => unreachable!(),
         }
         obj
     }
@@ -286,7 +363,8 @@ mod value_tests {
     #[test]
     fn unpickle_all() {
         for &(major, proto) in TEST_CASES {
-            let file = File::open(format!("test/data/tests_py{}_proto{}.pickle", major, proto)).unwrap();
+            let file =
+                File::open(format!("test/data/tests_py{}_proto{}.pickle", major, proto)).unwrap();
             let comparison = get_test_object(major);
             let unpickled = value_from_reader(file, Default::default()).unwrap();
             assert_eq!(unpickled, comparison, "py {}, proto {}", major, proto);
@@ -304,10 +382,11 @@ mod value_tests {
     #[test]
     fn recursive() {
         for proto in &[0, 1, 2, 3, 4, 5] {
-            let file = File::open(format!("test/data/test_recursive_proto{}.pickle", proto)).unwrap();
+            let file =
+                File::open(format!("test/data/test_recursive_proto{}.pickle", proto)).unwrap();
             match value_from_reader(file, Default::default()) {
-                Err(Error::Syntax(ErrorCode::Recursive)) => { }
-                _ => assert!(false, "wrong/no error returned for recursive structure")
+                Err(Error::Syntax(ErrorCode::Recursive)) => {}
+                _ => assert!(false, "wrong/no error returned for recursive structure"),
             }
         }
     }
@@ -318,7 +397,9 @@ mod value_tests {
         for _ in 0..1000 {
             let mut stream = [0u8; 1000];
             thread_rng().fill_bytes(&mut stream);
-            if *stream.last().unwrap() == b'.' { continue; }
+            if *stream.last().unwrap() == b'.' {
+                continue;
+            }
             // These must all fail with an error, since we skip the check if the
             // last byte is a STOP opcode.
             assert!(value_from_slice(&stream, Default::default()).is_err());
@@ -332,14 +413,16 @@ mod value_tests {
             let tripped = value_from_slice(&vec, Default::default()).unwrap();
             assert_eq!(original, tripped);
         }
-        QuickCheck::new().r#gen(Gen::new(10))
-                         .tests(5000)
-                         .quickcheck(roundtrip as fn(_));
+        QuickCheck::new()
+            .r#gen(Gen::new(10))
+            .tests(5000)
+            .quickcheck(roundtrip as fn(_));
     }
 
     #[test]
     fn roundtrip_json() {
-        let original: serde_json::Value = serde_json::from_str(r#"[
+        let original: serde_json::Value = serde_json::from_str(
+            r#"[
             {"null": null,
              "false": false,
              "true": true,
@@ -347,7 +430,9 @@ mod value_tests {
              "float": 1.5e10,
              "list": [false, 5, "true", 3.8]
             }
-        ]"#).unwrap();
+        ]"#,
+        )
+        .unwrap();
         let vec: Vec<_> = to_vec(&original, Default::default()).unwrap();
         let tripped: serde_json::Value = from_slice(&vec, Default::default()).unwrap();
         assert_eq!(original, tripped);
@@ -370,7 +455,8 @@ mod value_tests {
         assert!(value_from_slice(&data, Default::default()).is_err());
         let val = value_from_slice(&data, DeOptions::new().replace_unresolved_globals()).unwrap();
         assert_eq!(val, Value::None);
-        let serde_val: serde_json::Value = from_slice(&data, DeOptions::new().replace_unresolved_globals()).unwrap();
+        let serde_val: serde_json::Value =
+            from_slice(&data, DeOptions::new().replace_unresolved_globals()).unwrap();
         assert_eq!(serde_val, serde_json::Value::Null);
     }
 }

@@ -1231,7 +1231,7 @@ impl<R: Read> Deserializer<R> {
                 } else {
                     let converted = Rc::new(RefCell::new(
                         self.convert_value(inner.clone())
-                            .expect("failed to convert shared value")
+                            .expect("failed to convert shared value"),
                     ));
 
                     self.converted_rc.insert(inner_ptr, Rc::clone(&converted));
