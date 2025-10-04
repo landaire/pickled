@@ -8,7 +8,7 @@
 
 use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive};
-use std::cell::RefCell;
+use std::cell::{Ref, RefCell};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -17,6 +17,53 @@ use std::rc::Rc;
 pub use crate::value_impls::{from_value, to_value};
 
 use crate::error::{Error, ErrorCode};
+
+#[derive(Debug, Eq, PartialOrd, Ord, Clone)]
+pub struct Shared<T>(Rc<RefCell<T>>);
+
+impl<T> Shared<T> {
+    pub fn new(value: T) -> Self {
+        Shared(Rc::new(RefCell::new(value)))
+    }
+
+    pub fn inner<'a>(&'a self) -> Ref<'a, T> {
+        self.0.borrow()
+    }
+}
+
+impl<T> Shared<T>
+where
+    T: Clone,
+{
+    pub fn into_raw_or_cloned(self) -> T {
+        if Rc::strong_count(&self.0) == 1 {
+            if let Some(inner) = Rc::into_inner(self.0) {
+                let inner = RefCell::into_inner(inner);
+                inner
+            } else {
+                panic!("TOCTOU while trying to serialize Shared")
+            }
+        } else {
+            self.0.borrow().clone()
+        }
+    }
+}
+
+impl<T> std::cmp::PartialEq for Shared<T>
+where
+    T: std::cmp::PartialEq,
+{
+    fn eq(&self, other: &Self) -> bool {
+        if Rc::ptr_eq(&self.0, &other.0) {
+            return true;
+        }
+
+        let this_inner = self.0.borrow();
+        let other_inner = other.0.borrow();
+
+        this_inner.eq(&other_inner)
+    }
+}
 
 /// Represents all primitive builtin Python values that can be restored by
 /// unpickling.
@@ -40,21 +87,19 @@ pub enum Value {
     /// Float
     F64(f64),
     /// Bytestring
-    Bytes(Vec<u8>),
+    Bytes(Shared<Vec<u8>>),
     /// Unicode string
-    String(String),
+    String(Shared<String>),
     /// List
-    List(Vec<Value>),
+    List(Shared<Vec<Value>>),
     /// Tuple
-    Tuple(Vec<Value>),
+    Tuple(Shared<Vec<Value>>),
     /// Set
-    Set(BTreeSet<HashableValue>),
+    Set(Shared<BTreeSet<HashableValue>>),
     /// Frozen (immutable) set
-    FrozenSet(BTreeSet<HashableValue>),
+    FrozenSet(Shared<BTreeSet<HashableValue>>),
     /// Dictionary (map)
-    Dict(BTreeMap<HashableValue, Value>),
-    /// Shared object
-    Shared(Rc<RefCell<Value>>),
+    Dict(Shared<BTreeMap<HashableValue, Value>>),
 }
 
 /// Represents all primitive builtin Python values that can be contained
@@ -78,23 +123,29 @@ pub enum HashableValue {
     /// Float
     F64(f64),
     /// Bytestring
-    Bytes(Vec<u8>),
+    Bytes(Shared<Vec<u8>>),
     /// Unicode string
-    String(String),
+    String(Shared<String>),
     /// Tuple
-    Tuple(Vec<HashableValue>),
+    Tuple(Shared<Vec<HashableValue>>),
     /// Frozen (immutable) set
-    FrozenSet(BTreeSet<HashableValue>),
-    /// Shared object
-    Shared(Rc<RefCell<HashableValue>>),
+    FrozenSet(Shared<BTreeSet<HashableValue>>),
 }
 
-fn values_to_hashable(values: Vec<Value>) -> Result<Vec<HashableValue>, Error> {
-    values.into_iter().map(Value::into_hashable).collect()
+fn values_to_hashable(values: Shared<Vec<Value>>) -> Result<Vec<HashableValue>, Error> {
+    values
+        .into_raw_or_cloned()
+        .into_iter()
+        .map(Value::into_hashable)
+        .collect()
 }
 
-fn hashable_to_values(values: Vec<HashableValue>) -> Vec<Value> {
-    values.into_iter().map(HashableValue::into_value).collect()
+fn hashable_to_values(values: Shared<Vec<HashableValue>>) -> Vec<Value> {
+    values
+        .into_raw_or_cloned()
+        .into_iter()
+        .map(HashableValue::into_value)
+        .collect()
 }
 
 impl Value {
@@ -110,19 +161,21 @@ impl Value {
             Value::Bytes(b) => Ok(HashableValue::Bytes(b)),
             Value::String(s) => Ok(HashableValue::String(s)),
             Value::FrozenSet(v) => Ok(HashableValue::FrozenSet(v)),
-            Value::Tuple(v) => values_to_hashable(v).map(HashableValue::Tuple),
-            Value::Shared(shared) => {
-                if Rc::strong_count(&shared) == 1 {
-                    if let Some(inner) = Rc::into_inner(shared) {
-                        let inner = RefCell::into_inner(inner);
-                        inner.into_hashable()
-                    } else {
-                        panic!("TOCTOU while trying to serialize Shared")
-                    }
-                } else {
-                    shared.borrow().clone().into_hashable()
-                }
+            Value::Tuple(v) => {
+                values_to_hashable(v).map(|values| HashableValue::Tuple(Shared::new(values)))
             }
+            // Value::Shared(shared) => {
+            //     if Rc::strong_count(&shared) == 1 {
+            //         if let Some(inner) = Rc::into_inner(shared) {
+            //             let inner = RefCell::into_inner(inner);
+            //             inner.into_hashable()
+            //         } else {
+            //             panic!("TOCTOU while trying to serialize Shared")
+            //         }
+            //     } else {
+            //         shared.borrow().clone().into_hashable()
+            //     }
+            // }
             _ => Err(Error::Syntax(ErrorCode::ValueNotHashable)),
         }
     }
@@ -140,19 +193,19 @@ impl HashableValue {
             HashableValue::Bytes(b) => Value::Bytes(b),
             HashableValue::String(s) => Value::String(s),
             HashableValue::FrozenSet(v) => Value::FrozenSet(v),
-            HashableValue::Tuple(v) => Value::Tuple(hashable_to_values(v)),
-            HashableValue::Shared(shared) => {
-                if Rc::strong_count(&shared) == 1 {
-                    if let Some(inner) = Rc::into_inner(shared) {
-                        let inner = RefCell::into_inner(inner);
-                        inner.into_value()
-                    } else {
-                        panic!("TOCTOU while trying to serialize Shared")
-                    }
-                } else {
-                    shared.borrow().clone().into_value()
-                }
-            }
+            HashableValue::Tuple(v) => Value::Tuple(Shared::new(hashable_to_values(v))),
+            // HashableValue::Shared(shared) => {
+            //     if Rc::strong_count(&shared) == 1 {
+            //         if let Some(inner) = Rc::into_inner(shared) {
+            //             let inner = RefCell::into_inner(inner);
+            //             inner.into_value()
+            //         } else {
+            //             panic!("TOCTOU while trying to serialize Shared")
+            //         }
+            //     } else {
+            //         shared.borrow().clone().into_value()
+            //     }
+            // }
         }
     }
 }
@@ -190,12 +243,20 @@ impl fmt::Display for Value {
             Value::F64(v) => write!(f, "{v}"),
             Value::Bytes(ref b) => write!(f, "b{b:?}"),
             Value::String(ref s) => write!(f, "{s:?}"),
-            Value::List(ref v) => write_elements(f, v.iter(), "[", "]", v.len(), false),
-            Value::Tuple(ref v) => write_elements(f, v.iter(), "(", ")", v.len(), v.len() == 1),
+            Value::List(ref v) => {
+                let v = v.inner();
+                write_elements(f, v.iter(), "[", "]", v.len(), false)
+            }
+            Value::Tuple(ref v) => {
+                let v = v.inner();
+                write_elements(f, v.iter(), "(", ")", v.len(), v.len() == 1)
+            }
             Value::FrozenSet(ref v) => {
+                let v = v.inner();
                 write_elements(f, v.iter(), "frozenset([", "])", v.len(), false)
             }
             Value::Set(ref v) => {
+                let v = v.inner();
                 if v.is_empty() {
                     write!(f, "set()")
                 } else {
@@ -204,6 +265,7 @@ impl fmt::Display for Value {
             }
             Value::Dict(ref v) => {
                 write!(f, "{{")?;
+                let v = v.inner();
                 for (i, (key, value)) in v.iter().enumerate() {
                     if i < v.len() - 1 {
                         write!(f, "{key}: {value}, ")?;
@@ -212,10 +274,6 @@ impl fmt::Display for Value {
                     }
                 }
                 write!(f, "}}")
-            }
-            Value::Shared(ref ref_cell) => {
-                let inner = ref_cell.borrow();
-                write!(f, "{}", inner)
             }
         }
     }
@@ -229,17 +287,21 @@ impl fmt::Display for HashableValue {
             HashableValue::I64(i) => write!(f, "{i}"),
             HashableValue::Int(ref i) => write!(f, "{i}"),
             HashableValue::F64(v) => write!(f, "{v}"),
-            HashableValue::Bytes(ref b) => write!(f, "b{b:?}"),
-            HashableValue::String(ref s) => write!(f, "{s:?}"),
+            HashableValue::Bytes(ref b) => {
+                let b = b.inner();
+                write!(f, "b{b:?}")
+            }
+            HashableValue::String(ref s) => {
+                let s = s.inner();
+                write!(f, "{s:?}")
+            }
             HashableValue::Tuple(ref v) => {
+                let v = v.inner();
                 write_elements(f, v.iter(), "(", ")", v.len(), v.len() == 1)
             }
             HashableValue::FrozenSet(ref v) => {
+                let v = v.inner();
                 write_elements(f, v.iter(), "frozenset([", "])", v.len(), false)
-            }
-            HashableValue::Shared(ref ref_cell) => {
-                let inner = ref_cell.borrow();
-                write!(f, "{}", inner)
             }
         }
     }
@@ -327,25 +389,6 @@ impl Ord for HashableValue {
                 Tuple(ref t2) => t.cmp(t2),
                 _ => Ordering::Greater,
             },
-            Shared(ref ref_cell) => {
-                match other {
-                    Shared(other_ref_cell) => {
-                        // Avoid deadlocks
-                        if Rc::ptr_eq(&ref_cell, other_ref_cell) {
-                            return Ordering::Equal;
-                        }
-
-                        let this_inner = ref_cell.borrow();
-                        let other_inner = other_ref_cell.borrow();
-
-                        this_inner.cmp(&other_inner)
-                    }
-                    other_value => {
-                        let this_inner = ref_cell.borrow();
-                        this_inner.cmp(other_value)
-                    }
-                }
-            }
         }
     }
 }

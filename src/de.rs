@@ -29,6 +29,8 @@ use std::str;
 use std::str::FromStr;
 use std::vec;
 
+use crate::value::Shared;
+
 use super::consts::*;
 use super::error::{Error, ErrorCode, Result};
 use super::value;
@@ -67,14 +69,13 @@ enum Value {
     I64(i64),
     Int(BigInt),
     F64(f64),
-    Bytes(Vec<u8>),
-    String(String),
-    List(Vec<Value>),
-    Tuple(Vec<Value>),
-    Set(Vec<Value>),
-    FrozenSet(Vec<Value>),
-    Dict(Vec<(Value, Value)>),
-    Shared(Rc<RefCell<Value>>),
+    Bytes(Shared<Vec<u8>>),
+    String(Shared<String>),
+    List(Shared<Vec<Value>>),
+    Tuple(Shared<Vec<Value>>),
+    Set(Shared<Vec<Value>>),
+    FrozenSet(Shared<Vec<Value>>),
+    Dict(Shared<Vec<(Value, Value)>>),
 }
 
 /// Options for deserializing.
@@ -118,11 +119,11 @@ pub struct Deserializer<R: Read> {
     rdr: BufReader<R>,
     options: DeOptions,
     pos: usize,
-    value: Option<Value>,                 // next value to deserialize
-    memo: BTreeMap<MemoId, (Value, i32)>, // pickle memo (value, number of refs)
-    stack: Vec<Value>,                    // topmost items on the stack
-    stacks: Vec<Vec<Value>>,              // items further down the stack, between MARKs
-    converted_rc: HashMap<usize, Rc<RefCell<value::Value>>>, // shared items that have already been converted
+    value: Option<Value>,                       // next value to deserialize
+    memo: BTreeMap<MemoId, (Value, i32)>,       // pickle memo (value, number of refs)
+    stack: Vec<Value>,                          // topmost items on the stack
+    stacks: Vec<Vec<Value>>,                    // items further down the stack, between MARKs
+    converted_rc: HashMap<usize, value::Value>, // shared items that have already been converted
 }
 
 impl<R: Read> Deserializer<R> {
@@ -351,15 +352,15 @@ impl<R: Read> Deserializer<R> {
                 // Length-prefixed (byte)strings
                 Opcode::ShortBinBytes => {
                     let string = self.read_u8_prefixed_bytes()?;
-                    self.stack.push(Value::Bytes(string));
+                    self.stack.push(Value::Bytes(Shared::new(string)));
                 }
                 Opcode::BinBytes => {
                     let string = self.read_u32_prefixed_bytes()?;
-                    self.stack.push(Value::Bytes(string));
+                    self.stack.push(Value::Bytes(Shared::new(string)));
                 }
                 Opcode::BinBytes8 => {
                     let string = self.read_u64_prefixed_bytes()?;
-                    self.stack.push(Value::Bytes(string));
+                    self.stack.push(Value::Bytes(Shared::new(string)));
                 }
                 Opcode::ShortBinString => {
                     let string = self.read_u8_prefixed_bytes()?;
@@ -388,36 +389,38 @@ impl<R: Read> Deserializer<R> {
                 }
                 Opcode::ByteArray8 => {
                     let string = self.read_u64_prefixed_bytes()?;
-                    self.stack.push(Value::Bytes(string));
+                    self.stack.push(Value::Bytes(Shared::new(string)));
                 }
 
                 // Tuples
-                Opcode::EmptyTuple => self.stack.push(Value::Tuple(Vec::new())),
+                Opcode::EmptyTuple => self.stack.push(Value::Tuple(Shared::new(Vec::new()))),
                 Opcode::Tuple1 => {
                     let item = self.pop()?;
-                    self.stack.push(Value::Tuple(vec![item]));
+                    self.stack.push(Value::Tuple(Shared::new(vec![item])));
                 }
                 Opcode::Tuple2 => {
                     let item2 = self.pop()?;
                     let item1 = self.pop()?;
-                    self.stack.push(Value::Tuple(vec![item1, item2]));
+                    self.stack
+                        .push(Value::Tuple(Shared::new(vec![item1, item2])));
                 }
                 Opcode::Tuple3 => {
                     let item3 = self.pop()?;
                     let item2 = self.pop()?;
                     let item1 = self.pop()?;
-                    self.stack.push(Value::Tuple(vec![item1, item2, item3]));
+                    self.stack
+                        .push(Value::Tuple(Shared::new(vec![item1, item2, item3])));
                 }
                 Opcode::Tuple => {
                     let items = self.pop_mark()?;
-                    self.stack.push(Value::Tuple(items));
+                    self.stack.push(Value::Tuple(Shared::new(items)));
                 }
 
                 // Lists
-                Opcode::EmptyList => self.stack.push(Value::List(Vec::new())),
+                Opcode::EmptyList => self.stack.push(Value::List(Shared::new(Vec::new()))),
                 Opcode::List => {
                     let items = self.pop_mark()?;
-                    self.stack.push(Value::List(items));
+                    self.stack.push(Value::List(Shared::new(items)));
                 }
                 Opcode::Append => {
                     let value = self.pop()?;
@@ -429,12 +432,12 @@ impl<R: Read> Deserializer<R> {
                 }
 
                 // Dicts
-                Opcode::EmptyDict => self.stack.push(Value::Dict(Vec::new())),
+                Opcode::EmptyDict => self.stack.push(Value::Dict(Shared::new(Vec::new()))),
                 Opcode::Dict => {
                     let items = self.pop_mark()?;
                     let mut dict = Vec::with_capacity(items.len() / 2);
                     Self::extend_dict(&mut dict, items);
-                    self.stack.push(Value::Dict(dict));
+                    self.stack.push(Value::Dict(Shared::new(dict)));
                 }
                 Opcode::SetItem => {
                     let value = self.pop()?;
@@ -447,10 +450,10 @@ impl<R: Read> Deserializer<R> {
                 }
 
                 // Sets and frozensets
-                Opcode::EmptySet => self.stack.push(Value::Set(Vec::new())),
+                Opcode::EmptySet => self.stack.push(Value::Set(Shared::new(Vec::new()))),
                 Opcode::FrozenSet => {
                     let items = self.pop_mark()?;
-                    self.stack.push(Value::FrozenSet(items));
+                    self.stack.push(Value::FrozenSet(Shared::new(items)));
                 }
                 Opcode::AddItems => {
                     let items = self.pop_mark()?;
@@ -467,11 +470,11 @@ impl<R: Read> Deserializer<R> {
                 }
                 Opcode::StackGlobal => {
                     let globname = match self.pop_resolve()? {
-                        Value::String(string) => string.into_bytes(),
+                        Value::String(string) => string.into_raw_or_cloned().into_bytes(),
                         other => return Self::stack_error("string", &other, self.pos),
                     };
                     let modname = match self.pop_resolve()? {
-                        Value::String(string) => string.into_bytes(),
+                        Value::String(string) => string.into_raw_or_cloned().into_bytes(),
                         other => return Self::stack_error("string", &other, self.pos),
                     };
                     let value = self.decode_global(modname, globname)?;
@@ -495,28 +498,28 @@ impl<R: Read> Deserializer<R> {
                     // pop arguments to init
                     self.pop_mark()?;
                     // push empty dictionary instead of the class instance
-                    self.stack.push(Value::Dict(Vec::new()));
+                    self.stack.push(Value::Dict(Shared::new(Vec::new())));
                 }
                 Opcode::Obj => {
                     // pop arguments to init
                     self.pop_mark()?;
                     // pop class object
                     self.pop()?;
-                    self.stack.push(Value::Dict(Vec::new()));
+                    self.stack.push(Value::Dict(Shared::new(Vec::new())));
                 }
                 Opcode::NewObj => {
                     // pop arguments and class object
                     for _ in 0..2 {
                         self.pop()?;
                     }
-                    self.stack.push(Value::Dict(Vec::new()));
+                    self.stack.push(Value::Dict(Shared::new(Vec::new())));
                 }
                 Opcode::NewObjEx => {
                     // pop keyword args, arguments and class object
                     for _ in 0..3 {
                         self.pop()?;
                     }
-                    self.stack.push(Value::Dict(Vec::new()));
+                    self.stack.push(Value::Dict(Shared::new(Vec::new())));
                 }
                 Opcode::Build => {
                     // The top-of-stack for BUILD is used either as the instance __dict__,
@@ -608,8 +611,7 @@ impl<R: Read> Deserializer<R> {
                 None => return Err(Error::Eval(ErrorCode::MissingMemo(id), self.pos)),
             };
         }
-        self.memo
-            .insert(memo_id, (Value::Shared(Rc::new(RefCell::new(item))), 1));
+        self.memo.insert(memo_id, (item, 1));
         Ok(())
     }
 
@@ -1038,7 +1040,7 @@ impl<R: Read> Deserializer<R> {
     }
 
     // Handle the REDUCE opcode for the few Global objects we support.
-    fn reduce_global(&mut self, global: Value, mut argtuple: Vec<Value>) -> Result<()> {
+    fn reduce_global(&mut self, global: Value, mut argtuple: Shared<Vec<Value>>) -> Result<()> {
         match global {
             Value::Global(Global::Set) => match self.resolve(argtuple.pop()) {
                 Some(Value::List(items)) => {
@@ -1179,51 +1181,34 @@ impl<R: Read> Deserializer<R> {
                     .into_iter()
                     .map(|v| self.convert_value(v))
                     .collect::<Result<_>>();
-                Ok(value::Value::List(new?))
+
+                Ok(value::Value::List(Shared::new(new?)))
             }
             Value::Tuple(v) => {
                 let new = v
                     .into_iter()
                     .map(|v| self.convert_value(v))
                     .collect::<Result<_>>();
-                Ok(value::Value::Tuple(new?))
+
+                Ok(value::Value::Tuple(Shared::new(new?)))
             }
             Value::Set(v) => {
                 let new = v
                     .into_iter()
                     .map(|v| self.convert_value(v).and_then(|rv| rv.into_hashable()))
                     .collect::<Result<_>>();
-                Ok(value::Value::Set(new?))
+                Ok(value::Value::Set(Shared::new(new?)))
             }
             Value::FrozenSet(v) => {
                 let new = v
                     .into_iter()
                     .map(|v| self.convert_value(v).and_then(|rv| rv.into_hashable()))
                     .collect::<Result<_>>();
-                Ok(value::Value::FrozenSet(new?))
+
+                Ok(value::Value::FrozenSet(Shared::new(new?)))
             }
             Value::Dict(v) => {
-                let mut map = BTreeMap::new();
-                for (key, value) in v {
-                    let real_key = self.convert_value(key).and_then(|rv| rv.into_hashable())?;
-                    let real_value = self.convert_value(value)?;
-                    map.insert(real_key, real_value);
-                }
-                Ok(value::Value::Dict(map))
-            }
-            Value::MemoRef(memo_id) => {
-                self.resolve_recursive(memo_id, (), |slf, (), value| slf.convert_value(value))
-            }
-            Value::Global(_) => {
-                if self.options.replace_unresolved_globals {
-                    Ok(value::Value::None)
-                } else {
-                    Err(Error::Syntax(ErrorCode::UnresolvedGlobal))
-                }
-            }
-            Value::Shared(ref_cell) => {
                 let inner = ref_cell.borrow_mut();
-
                 let inner_ptr = ref_cell.as_ptr().expose_provenance();
 
                 if let Some(converted) = self.converted_rc.get(&inner_ptr) {
@@ -1237,6 +1222,25 @@ impl<R: Read> Deserializer<R> {
                     self.converted_rc.insert(inner_ptr, Rc::clone(&converted));
 
                     Ok(value::Value::Shared(converted))
+                }
+
+                let mut map = BTreeMap::new();
+                for (key, value) in v {
+                    let real_key = self.convert_value(key).and_then(|rv| rv.into_hashable())?;
+                    let real_value = self.convert_value(value)?;
+                    map.insert(real_key, real_value);
+                }
+
+                Ok(value::Value::Dict(Shared::new(map)))
+            }
+            Value::MemoRef(memo_id) => {
+                self.resolve_recursive(memo_id, (), |slf, (), value| slf.convert_value(value))
+            }
+            Value::Global(_) => {
+                if self.options.replace_unresolved_globals {
+                    Ok(value::Value::None)
+                } else {
+                    Err(Error::Syntax(ErrorCode::UnresolvedGlobal))
                 }
             }
         }
