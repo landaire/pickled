@@ -17,7 +17,7 @@ use std::result::Result as StdResult;
 use std::vec;
 
 use crate::error::{Error, ErrorCode, Result};
-use crate::value::{HashableValue, Value};
+use crate::value::{HashableValue, Shared, Value};
 
 impl<'de> de::Deserialize<'de> for Value {
     #[inline]
@@ -63,7 +63,7 @@ impl<'de> de::Deserialize<'de> for Value {
 
             #[inline]
             fn visit_string<E>(self, value: String) -> StdResult<Value, E> {
-                Ok(Value::String(value))
+                Ok(Value::String(Shared::new(value)))
             }
 
             #[inline]
@@ -73,7 +73,7 @@ impl<'de> de::Deserialize<'de> for Value {
 
             #[inline]
             fn visit_byte_buf<E: de::Error>(self, value: Vec<u8>) -> StdResult<Value, E> {
-                Ok(Value::Bytes(value))
+                Ok(Value::Bytes(Shared::new(value)))
             }
 
             #[inline]
@@ -100,7 +100,7 @@ impl<'de> de::Deserialize<'de> for Value {
                 while let Some(elem) = visitor.next_element()? {
                     values.push(elem);
                 }
-                Ok(Value::List(values))
+                Ok(Value::List(Shared::new(values)))
             }
 
             #[inline]
@@ -112,7 +112,7 @@ impl<'de> de::Deserialize<'de> for Value {
                 while let Some((key, value)) = visitor.next_entry()? {
                     values.insert(key, value);
                 }
-                Ok(Value::Dict(values))
+                Ok(Value::Dict(Shared::new(values)))
             }
         }
 
@@ -164,7 +164,7 @@ impl<'de> de::Deserialize<'de> for HashableValue {
 
             #[inline]
             fn visit_string<E>(self, value: String) -> StdResult<HashableValue, E> {
-                Ok(HashableValue::String(value))
+                Ok(HashableValue::String(Shared::new(value)))
             }
 
             #[inline]
@@ -174,7 +174,7 @@ impl<'de> de::Deserialize<'de> for HashableValue {
 
             #[inline]
             fn visit_byte_buf<E: de::Error>(self, value: Vec<u8>) -> StdResult<HashableValue, E> {
-                Ok(HashableValue::Bytes(value))
+                Ok(HashableValue::Bytes(Shared::new(value)))
             }
 
             #[inline]
@@ -204,7 +204,7 @@ impl<'de> de::Deserialize<'de> for HashableValue {
                 while let Some(elem) = visitor.next_element()? {
                     values.push(elem);
                 }
-                Ok(HashableValue::Tuple(values))
+                Ok(HashableValue::Tuple(Shared::new(values)))
             }
         }
 
@@ -249,9 +249,10 @@ impl<'de: 'a, 'a> de::Deserializer<'de> for &'a mut Deserializer {
                 }
             }
             Value::F64(v) => visitor.visit_f64(v),
-            Value::Bytes(v) => visitor.visit_byte_buf(v),
-            Value::String(v) => visitor.visit_string(v),
+            Value::Bytes(v) => visitor.visit_byte_buf(v.into_raw_or_cloned()),
+            Value::String(v) => visitor.visit_string(v.into_raw_or_cloned()),
             Value::List(v) => {
+                let v = v.into_raw_or_cloned();
                 let len = v.len();
                 visitor.visit_seq(SeqDeserializer {
                     de: self,
@@ -259,13 +260,21 @@ impl<'de: 'a, 'a> de::Deserializer<'de> for &'a mut Deserializer {
                     len,
                 })
             }
-            Value::Tuple(v) => visitor.visit_seq(SeqDeserializer {
-                de: self,
-                len: v.len(),
-                iter: v.into_iter(),
-            }),
+            Value::Tuple(v) => {
+                let v = v.into_raw_or_cloned();
+
+                visitor.visit_seq(SeqDeserializer {
+                    de: self,
+                    len: v.len(),
+                    iter: v.into_iter(),
+                })
+            }
             Value::Set(v) | Value::FrozenSet(v) => {
-                let v: Vec<_> = v.into_iter().map(HashableValue::into_value).collect();
+                let v: Vec<_> = v
+                    .into_raw_or_cloned()
+                    .into_iter()
+                    .map(HashableValue::into_value)
+                    .collect();
                 visitor.visit_seq(SeqDeserializer {
                     de: self,
                     len: v.len(),
@@ -273,6 +282,8 @@ impl<'de: 'a, 'a> de::Deserializer<'de> for &'a mut Deserializer {
                 })
             }
             Value::Dict(v) => {
+                let v = v.into_raw_or_cloned();
+
                 let len = v.len();
                 visitor.visit_map(MapDeserializer {
                     de: self,
@@ -280,9 +291,6 @@ impl<'de: 'a, 'a> de::Deserializer<'de> for &'a mut Deserializer {
                     value: None,
                     len,
                 })
-            }
-            Value::Shared(ref_cell) => {
-                panic!("deserialize_any for shared");
             }
         }
     }
@@ -331,7 +339,8 @@ impl<'de: 'a, 'a> de::EnumAccess<'de> for &'a mut Deserializer {
         seed: T,
     ) -> Result<(T::Value, Self::Variant)> {
         match self.value.take() {
-            Some(Value::Tuple(mut v)) => {
+            Some(Value::Tuple(v)) => {
+                let mut v = v.into_raw_or_cloned();
                 if v.len() == 2 {
                     let args = v.pop();
                     self.value = v.pop();
@@ -345,6 +354,7 @@ impl<'de: 'a, 'a> de::EnumAccess<'de> for &'a mut Deserializer {
                 }
             }
             Some(Value::Dict(v)) => {
+                let v = v.into_raw_or_cloned();
                 if v.len() != 1 {
                     Err(Error::Syntax(ErrorCode::Structure(
                         "enum variants must \
@@ -484,7 +494,7 @@ impl<'a> ser::SerializeSeq for SerializeSeq<'a> {
 
     #[inline]
     fn end(self) -> Result<Value> {
-        Ok(Value::List(self.state))
+        Ok(Value::List(Shared::new(self.state)))
     }
 }
 
@@ -499,7 +509,7 @@ impl<'a> ser::SerializeTuple for SerializeSeq<'a> {
 
     #[inline]
     fn end(self) -> Result<Value> {
-        Ok(Value::Tuple(self.state))
+        Ok(Value::Tuple(Shared::new(self.state)))
     }
 }
 
@@ -514,7 +524,7 @@ impl<'a> ser::SerializeTupleStruct for SerializeSeq<'a> {
 
     #[inline]
     fn end(self) -> Result<Value> {
-        Ok(Value::Tuple(self.state))
+        Ok(Value::Tuple(Shared::new(self.state)))
     }
 }
 
@@ -538,10 +548,10 @@ impl<'a> ser::SerializeTupleVariant for SerializeTupleVariant<'a> {
     fn end(self) -> Result<Value> {
         let mut d = BTreeMap::new();
         d.insert(
-            HashableValue::String(self.variant.into()),
-            Value::List(self.state),
+            HashableValue::String(Shared::new(self.variant.into())),
+            Value::List(Shared::new(self.state)),
         );
-        Ok(Value::Dict(d))
+        Ok(Value::Dict(Shared::new(d)))
     }
 }
 
@@ -573,7 +583,7 @@ impl<'a> ser::SerializeMap for SerializeMap<'a> {
 
     #[inline]
     fn end(self) -> Result<Value> {
-        Ok(Value::Dict(self.state))
+        Ok(Value::Dict(Shared::new(self.state)))
     }
 }
 
@@ -596,7 +606,7 @@ impl<'a> ser::SerializeStruct for SerializeMap<'a> {
 
     #[inline]
     fn end(self) -> Result<Value> {
-        Ok(Value::Dict(self.state))
+        Ok(Value::Dict(Shared::new(self.state)))
     }
 }
 
@@ -617,10 +627,10 @@ impl<'a> ser::SerializeStructVariant for SerializeMap<'a> {
     fn end(self) -> Result<Value> {
         let mut d = BTreeMap::new();
         d.insert(
-            HashableValue::String(self.variant.into()),
-            Value::Dict(self.state),
+            HashableValue::String(Shared::new(self.variant.into())),
+            Value::Dict(Shared::new(self.state)),
         );
-        Ok(Value::Dict(d))
+        Ok(Value::Dict(Shared::new(d)))
     }
 }
 
@@ -699,17 +709,17 @@ impl<'a> ser::Serializer for &'a mut Serializer {
     fn serialize_char(self, value: char) -> Result<Value> {
         let mut s = String::new();
         s.push(value);
-        Ok(Value::String(s))
+        Ok(Value::String(Shared::new(s)))
     }
 
     #[inline]
     fn serialize_str(self, value: &str) -> Result<Value> {
-        Ok(Value::String(String::from(value)))
+        Ok(Value::String(Shared::new(String::from(value))))
     }
 
     #[inline]
     fn serialize_bytes(self, value: &[u8]) -> Result<Value> {
-        Ok(Value::Bytes(value.to_vec()))
+        Ok(Value::Bytes(Shared::new(value.to_vec())))
     }
 
     #[inline]
@@ -729,7 +739,7 @@ impl<'a> ser::Serializer for &'a mut Serializer {
         _variant_index: u32,
         variant: &'static str,
     ) -> Result<Value> {
-        Ok(Value::String(variant.into()))
+        Ok(Value::String(Shared::new(variant.into())))
     }
 
     #[inline]
@@ -750,8 +760,11 @@ impl<'a> ser::Serializer for &'a mut Serializer {
         value: &T,
     ) -> Result<Value> {
         let mut d = BTreeMap::new();
-        d.insert(HashableValue::String(variant.into()), to_value(&value)?);
-        Ok(Value::Dict(d))
+        d.insert(
+            HashableValue::String(Shared::new(variant.into())),
+            to_value(&value)?,
+        );
+        Ok(Value::Dict(Shared::new(d)))
     }
 
     #[inline]

@@ -106,16 +106,12 @@ impl<W: io::Write> Serializer<W> {
             HashableValue::Bool(b) => self.serialize_bool(b),
             HashableValue::I64(i) => self.serialize_i64(i),
             HashableValue::F64(f) => self.serialize_f64(f),
-            HashableValue::Bytes(ref b) => self.serialize_bytes(b),
-            HashableValue::String(ref s) => self.serialize_str(s),
+            HashableValue::Bytes(ref b) => self.serialize_bytes(&b.inner()),
+            HashableValue::String(ref s) => self.serialize_str(&s.inner()),
             HashableValue::Int(ref i) => self.serialize_bigint(i),
-            HashableValue::FrozenSet(ref s) => self.serialize_set(s, b"frozenset"),
+            HashableValue::FrozenSet(ref s) => self.serialize_set(&s.inner(), b"frozenset"),
             HashableValue::Tuple(ref t) => {
-                self.serialize_tuplevalue(t, |slf, v| slf.serialize_hashable_value(v))
-            }
-            HashableValue::Shared(ref ref_cell) => {
-                let inner = ref_cell.borrow();
-                self.serialize_hashable_value(&inner)
+                self.serialize_tuplevalue(&t.inner(), |slf, v| slf.serialize_hashable_value(v))
             }
         }
     }
@@ -127,11 +123,11 @@ impl<W: io::Write> Serializer<W> {
             Value::Bool(b) => self.serialize_bool(b),
             Value::I64(i) => self.serialize_i64(i),
             Value::F64(f) => self.serialize_f64(f),
-            Value::Bytes(ref b) => self.serialize_bytes(b),
-            Value::String(ref s) => self.serialize_str(s),
+            Value::Bytes(ref b) => self.serialize_bytes(&b.inner()),
+            Value::String(ref s) => self.serialize_str(&s.inner()),
             Value::List(ref l) => {
                 self.write_opcode(EMPTY_LIST)?;
-                for chunk in l.chunks(1000) {
+                for chunk in l.inner().chunks(1000) {
                     self.write_opcode(MARK)?;
                     for item in chunk {
                         self.serialize_value(item)?;
@@ -143,7 +139,7 @@ impl<W: io::Write> Serializer<W> {
             Value::Dict(ref d) => {
                 self.write_opcode(EMPTY_DICT)?;
                 self.write_opcode(MARK)?;
-                for (n, (key, value)) in d.iter().enumerate() {
+                for (n, (key, value)) in d.inner().iter().enumerate() {
                     if n % 1000 == 999 {
                         self.write_opcode(SETITEMS)?;
                         self.write_opcode(MARK)?;
@@ -155,13 +151,11 @@ impl<W: io::Write> Serializer<W> {
                 Ok(())
             }
             Value::Int(ref i) => self.serialize_bigint(i),
-            Value::Tuple(ref t) => self.serialize_tuplevalue(t, |slf, v| slf.serialize_value(v)),
-            Value::Set(ref s) => self.serialize_set(s, b"set"),
-            Value::FrozenSet(ref s) => self.serialize_set(s, b"frozenset"),
-            Value::Shared(ref ref_cell) => {
-                let inner = ref_cell.borrow();
-                self.serialize_value(&inner)
+            Value::Tuple(ref t) => {
+                self.serialize_tuplevalue(&t.inner(), |slf, v| slf.serialize_value(v))
             }
+            Value::Set(ref s) => self.serialize_set(&s.inner(), b"set"),
+            Value::FrozenSet(ref s) => self.serialize_set(&s.inner(), b"frozenset"),
         }
     }
 

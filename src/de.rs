@@ -16,7 +16,6 @@ use num_bigint::{BigInt, Sign};
 use num_traits::ToPrimitive;
 use serde::de::Visitor;
 use serde::{de, forward_to_deserialize_any};
-use std::cell::RefCell;
 use std::char;
 use std::collections::{BTreeMap, HashMap};
 use std::convert::TryFrom;
@@ -24,12 +23,11 @@ use std::io;
 use std::io::{BufRead, BufReader, Read};
 use std::iter::FusedIterator;
 use std::mem;
-use std::rc::Rc;
 use std::str;
 use std::str::FromStr;
 use std::vec;
 
-use crate::value::Shared;
+use crate::value::{RawHashableValue, Shared};
 
 use super::consts::*;
 use super::error::{Error, ErrorCode, Result};
@@ -39,7 +37,7 @@ const MEMO_REF_COUNTING: bool = false;
 
 type MemoId = u32;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum Global {
     Set,                   // builtins/__builtin__.set
     Frozenset,             // builtins/__builtin__.frozenset
@@ -124,6 +122,8 @@ pub struct Deserializer<R: Read> {
     stack: Vec<Value>,                          // topmost items on the stack
     stacks: Vec<Vec<Value>>,                    // items further down the stack, between MARKs
     converted_rc: HashMap<usize, value::Value>, // shared items that have already been converted
+    strings_rc: HashMap<Vec<u8>, Value>,
+    tuple_rc: BTreeMap<Vec<value::RawHashableValue>, Value>,
 }
 
 impl<R: Read> Deserializer<R> {
@@ -138,6 +138,8 @@ impl<R: Read> Deserializer<R> {
             stacks: Vec::with_capacity(16),
             options,
             converted_rc: Default::default(),
+            strings_rc: Default::default(),
+            tuple_rc: Default::default(),
         }
     }
 
@@ -209,6 +211,41 @@ impl<R: Read> Deserializer<R> {
             Some(v) => Ok(v),
             None => self.parse_value(),
         }
+    }
+
+    fn tuple_from_items(&mut self, items: Vec<Value>) -> Value {
+        let hashable_items = items
+            .iter()
+            .cloned()
+            .map(|de_value| {
+                let converted = self.convert_value(de_value)?;
+                converted.into_raw_hashable()
+            })
+            .collect::<Result<Vec<RawHashableValue>>>();
+
+        if let Ok(hashable_items) = hashable_items {
+            if let Some(cached) = self.tuple_rc.get(&hashable_items) {
+                cached.clone()
+            } else {
+                let value = Value::Tuple(Shared::new(items.clone()));
+                self.tuple_rc.insert(hashable_items, value.clone());
+
+                value
+            }
+        } else {
+            Value::Tuple(Shared::new(items))
+        }
+    }
+
+    fn list_from_items(&mut self, items: Vec<Value>) -> Value {
+        Value::List(Shared::new(items))
+    }
+
+    fn dict_from_items(&mut self, items: Vec<Value>) -> Value {
+        let mut dict = Vec::with_capacity(items.len() / 2);
+        Self::extend_dict(&mut dict, items);
+
+        Value::Dict(Shared::new(dict))
     }
 
     /// Parse a value from the underlying stream.  This will consume the whole
@@ -310,12 +347,26 @@ impl<R: Read> Deserializer<R> {
                 // ASCII-formatted strings
                 Opcode::String => {
                     let line = self.read_line()?;
-                    let string = self.decode_escaped_string(&line)?;
+                    let string = if let Some(cached_str) = self.strings_rc.get(&line) {
+                        cached_str.clone()
+                    } else {
+                        let string = self.decode_escaped_string(&line)?;
+                        self.strings_rc.insert(line, string.clone());
+
+                        string
+                    };
                     self.stack.push(string);
                 }
                 Opcode::Unicode => {
                     let line = self.read_line()?;
-                    let string = self.decode_escaped_unicode(&line)?;
+                    let string = if let Some(cached_str) = self.strings_rc.get(&line) {
+                        cached_str.clone()
+                    } else {
+                        let string = self.decode_escaped_unicode(&line)?;
+                        self.strings_rc.insert(line, string.clone());
+
+                        string
+                    };
                     self.stack.push(string);
                 }
 
@@ -393,34 +444,40 @@ impl<R: Read> Deserializer<R> {
                 }
 
                 // Tuples
-                Opcode::EmptyTuple => self.stack.push(Value::Tuple(Shared::new(Vec::new()))),
+                Opcode::EmptyTuple => {
+                    let tuple = self.tuple_from_items(Vec::new());
+                    self.stack.push(tuple)
+                }
                 Opcode::Tuple1 => {
                     let item = self.pop()?;
-                    self.stack.push(Value::Tuple(Shared::new(vec![item])));
+                    let tuple = self.tuple_from_items(vec![item]);
+                    self.stack.push(tuple);
                 }
                 Opcode::Tuple2 => {
                     let item2 = self.pop()?;
                     let item1 = self.pop()?;
-                    self.stack
-                        .push(Value::Tuple(Shared::new(vec![item1, item2])));
+                    let tuple = self.tuple_from_items(vec![item1, item2]);
+                    self.stack.push(tuple);
                 }
                 Opcode::Tuple3 => {
                     let item3 = self.pop()?;
                     let item2 = self.pop()?;
                     let item1 = self.pop()?;
-                    self.stack
-                        .push(Value::Tuple(Shared::new(vec![item1, item2, item3])));
+                    let tuple = self.tuple_from_items(vec![item1, item2, item3]);
+                    self.stack.push(tuple);
                 }
                 Opcode::Tuple => {
                     let items = self.pop_mark()?;
-                    self.stack.push(Value::Tuple(Shared::new(items)));
+                    let tuple = self.tuple_from_items(items);
+                    self.stack.push(tuple);
                 }
 
                 // Lists
                 Opcode::EmptyList => self.stack.push(Value::List(Shared::new(Vec::new()))),
                 Opcode::List => {
                     let items = self.pop_mark()?;
-                    self.stack.push(Value::List(Shared::new(items)));
+                    let list = self.list_from_items(items);
+                    self.stack.push(list);
                 }
                 Opcode::Append => {
                     let value = self.pop()?;
@@ -435,9 +492,10 @@ impl<R: Read> Deserializer<R> {
                 Opcode::EmptyDict => self.stack.push(Value::Dict(Shared::new(Vec::new()))),
                 Opcode::Dict => {
                     let items = self.pop_mark()?;
-                    let mut dict = Vec::with_capacity(items.len() / 2);
-                    Self::extend_dict(&mut dict, items);
-                    self.stack.push(Value::Dict(Shared::new(dict)));
+
+                    let dict = self.dict_from_items(items);
+
+                    self.stack.push(dict);
                 }
                 Opcode::SetItem => {
                     let value = self.pop()?;
@@ -531,7 +589,7 @@ impl<R: Read> Deserializer<R> {
                     let _standin = self.resolve(Some(obj.clone()));
 
                     if let Value::MemoRef(id) = obj {
-                        self.memoize(id, state.clone());
+                        self.memoize(id, state.clone())?;
                         self.stack.push(state);
                     }
                 }
@@ -902,7 +960,7 @@ impl<R: Read> Deserializer<R> {
                 _ => result.push(b as char),
             }
         }
-        Ok(Value::String(result))
+        Ok(Value::String(Shared::new(result)))
     }
 
     // Decode a string - either as Unicode or as bytes.
@@ -910,14 +968,14 @@ impl<R: Read> Deserializer<R> {
         if self.options.decode_strings {
             self.decode_unicode(string)
         } else {
-            Ok(Value::Bytes(string))
+            Ok(Value::Bytes(Shared::new(string)))
         }
     }
 
     // Decode a Unicode string from UTF-8.
     fn decode_unicode(&self, string: Vec<u8>) -> Result<Value> {
         match String::from_utf8(string) {
-            Ok(v) => Ok(Value::String(v)),
+            Ok(v) => Ok(Value::String(Shared::new(v))),
             Err(_) => self.error(ErrorCode::StringNotUTF8),
         }
     }
@@ -943,16 +1001,10 @@ impl<R: Read> Deserializer<R> {
         let top = self.top()?;
 
         match *top {
-            Value::List(ref mut list) => {
-                f(list);
+            Value::List(ref list) => {
+                let mut list = list.inner_mut();
+                f(&mut list);
                 return Ok(());
-            }
-            Value::Shared(ref list) => {
-                let mut inner = list.borrow_mut();
-                if let Value::List(list) = &mut *inner {
-                    f(list);
-                    return Ok(());
-                }
             }
             _ => {
                 // Fallthrough to error
@@ -981,16 +1033,10 @@ impl<R: Read> Deserializer<R> {
         let pos = self.pos;
         let top = self.top()?;
         match *top {
-            Value::Dict(ref mut dict) => {
-                f(dict);
+            Value::Dict(ref dict) => {
+                let mut dict = dict.inner_mut();
+                f(&mut dict);
                 return Ok(());
-            }
-            Value::Shared(ref dict) => {
-                let mut inner = dict.borrow_mut();
-                if let Value::Dict(dict) = &mut *inner {
-                    f(dict);
-                    return Ok(());
-                }
             }
             _ => {
                 // Fallthrough to error
@@ -1007,8 +1053,9 @@ impl<R: Read> Deserializer<R> {
     {
         let pos = self.pos;
         let top = self.top()?;
-        if let Value::Set(ref mut set) = *top {
-            f(set);
+        if let Value::Set(ref set) = *top {
+            let mut set = set.inner_mut();
+            f(&mut set);
             Ok(())
         } else {
             Self::stack_error("set", top, pos)
@@ -1040,16 +1087,16 @@ impl<R: Read> Deserializer<R> {
     }
 
     // Handle the REDUCE opcode for the few Global objects we support.
-    fn reduce_global(&mut self, global: Value, mut argtuple: Shared<Vec<Value>>) -> Result<()> {
+    fn reduce_global(&mut self, global: Value, argtuple: Shared<Vec<Value>>) -> Result<()> {
         match global {
-            Value::Global(Global::Set) => match self.resolve(argtuple.pop()) {
+            Value::Global(Global::Set) => match self.resolve(argtuple.inner_mut().pop()) {
                 Some(Value::List(items)) => {
                     self.stack.push(Value::Set(items));
                     Ok(())
                 }
                 _ => self.error(ErrorCode::InvalidValue("set() arg".into())),
             },
-            Value::Global(Global::Frozenset) => match self.resolve(argtuple.pop()) {
+            Value::Global(Global::Frozenset) => match self.resolve(argtuple.inner_mut().pop()) {
                 Some(Value::List(items)) => {
                     self.stack.push(Value::FrozenSet(items));
                     Ok(())
@@ -1058,8 +1105,8 @@ impl<R: Read> Deserializer<R> {
             },
             Value::Global(Global::Bytearray) => {
                 // On Py2, the call is encoded as bytearray(u"foo", "latin-1").
-                argtuple.truncate(1);
-                match self.resolve(argtuple.pop()) {
+                argtuple.inner_mut().truncate(1);
+                match self.resolve(argtuple.inner_mut().pop()) {
                     Some(Value::Bytes(bytes)) => {
                         self.stack.push(Value::Bytes(bytes));
                         Ok(())
@@ -1067,22 +1114,22 @@ impl<R: Read> Deserializer<R> {
                     Some(Value::String(string)) => {
                         // The code points in the string are actually bytes values.
                         // So we need to collect them individually.
-                        self.stack.push(Value::Bytes(
-                            string.chars().map(|ch| ch as u32 as u8).collect(),
-                        ));
+                        self.stack.push(Value::Bytes(Shared::new(
+                            string.inner().chars().map(|ch| ch as u32 as u8).collect(),
+                        )));
                         Ok(())
                     }
                     _ => self.error(ErrorCode::InvalidValue("bytearray() arg".into())),
                 }
             }
-            Value::Global(Global::List) => match self.resolve(argtuple.pop()) {
+            Value::Global(Global::List) => match self.resolve(argtuple.inner_mut().pop()) {
                 Some(Value::List(items)) => {
                     self.stack.push(Value::List(items));
                     Ok(())
                 }
                 _ => self.error(ErrorCode::InvalidValue("list() arg".into())),
             },
-            Value::Global(Global::Int) => match self.resolve(argtuple.pop()) {
+            Value::Global(Global::Int) => match self.resolve(argtuple.inner_mut().pop()) {
                 Some(Value::Int(integer)) => {
                     self.stack.push(Value::Int(integer));
                     Ok(())
@@ -1091,26 +1138,26 @@ impl<R: Read> Deserializer<R> {
             },
             Value::Global(Global::Encode) => {
                 // Byte object encoded as _codecs.encode(x, 'latin1')
-                match self.resolve(argtuple.pop()) {
+                match self.resolve(argtuple.inner_mut().pop()) {
                     // Encoding, always latin1
                     Some(Value::String(_)) => {}
                     _ => return self.error(ErrorCode::InvalidValue("encode() arg".into())),
                 }
-                match self.resolve(argtuple.pop()) {
+                match self.resolve(argtuple.inner_mut().pop()) {
                     Some(Value::String(s)) => {
                         // Now we have to convert the string to latin-1
                         // encoded bytes.  It never contains codepoints
                         // above 0xff.
-                        let bytes = s.chars().map(|ch| ch as u8).collect();
-                        self.stack.push(Value::Bytes(bytes));
+                        let bytes = s.inner().chars().map(|ch| ch as u8).collect();
+                        self.stack.push(Value::Bytes(Shared::new(bytes)));
                         Ok(())
                     }
                     _ => self.error(ErrorCode::InvalidValue("encode() arg".into())),
                 }
             }
             Value::Global(Global::Reconstructor) => {
-                let _args = self.resolve(argtuple.pop());
-                let _func = self.resolve(argtuple.pop());
+                let _args = self.resolve(argtuple.inner_mut().pop());
+                let _func = self.resolve(argtuple.inner_mut().pop());
 
                 let value = Value::Global(Global::Reconstructor);
 
@@ -1123,25 +1170,6 @@ impl<R: Read> Deserializer<R> {
                 // class is instantiated.
                 self.stack
                     .push(Value::Global(Global::Other(modname, classname)));
-                Ok(())
-            }
-            Value::Shared(shared) => {
-                let inner = shared.borrow();
-
-                // le hack
-                self.reduce_global(inner.clone(), argtuple)?;
-
-                drop(inner);
-
-                let reduced_value = self.stack.pop().unwrap();
-
-                let mut inner = shared.borrow_mut();
-                *inner = reduced_value;
-
-                drop(inner);
-
-                self.stack.push(Value::Shared(Rc::clone(&shared)));
-
                 Ok(())
             }
             other => Self::stack_error("global reference", &other, self.pos),
@@ -1177,61 +1205,88 @@ impl<R: Read> Deserializer<R> {
             Value::Bytes(v) => Ok(value::Value::Bytes(v)),
             Value::String(v) => Ok(value::Value::String(v)),
             Value::List(v) => {
+                let inner_ptr = v.provenance();
+
+                if let Some(converted) = self.converted_rc.get(&inner_ptr) {
+                    return Ok(converted.clone());
+                }
+
                 let new = v
-                    .into_iter()
-                    .map(|v| self.convert_value(v))
+                    .inner()
+                    .iter()
+                    .map(|v| self.convert_value(v.clone()))
                     .collect::<Result<_>>();
 
-                Ok(value::Value::List(Shared::new(new?)))
+                let new_shared = Shared::new(new?);
+
+                let new_value = value::Value::List(new_shared.clone());
+                self.converted_rc.insert(inner_ptr, new_value.clone());
+
+                Ok(new_value)
             }
             Value::Tuple(v) => {
-                let new = v
-                    .into_iter()
-                    .map(|v| self.convert_value(v))
-                    .collect::<Result<_>>();
+                let inner_ptr = v.provenance();
 
-                Ok(value::Value::Tuple(Shared::new(new?)))
+                if let Some(converted) = self.converted_rc.get(&inner_ptr) {
+                    return Ok(converted.clone());
+                }
+
+                let new = v
+                    .inner()
+                    .iter()
+                    .map(|v| self.convert_value(v.clone()))
+                    .collect::<Result<Vec<_>>>()?;
+
+                let new_shared = Shared::new(new);
+
+                let new_value = value::Value::Tuple(new_shared.clone());
+                self.converted_rc.insert(inner_ptr, new_value.clone());
+
+                Ok(new_value)
             }
             Value::Set(v) => {
                 let new = v
-                    .into_iter()
+                    .inner()
+                    .iter()
+                    .cloned()
                     .map(|v| self.convert_value(v).and_then(|rv| rv.into_hashable()))
                     .collect::<Result<_>>();
                 Ok(value::Value::Set(Shared::new(new?)))
             }
             Value::FrozenSet(v) => {
                 let new = v
-                    .into_iter()
+                    .inner()
+                    .iter()
+                    .cloned()
                     .map(|v| self.convert_value(v).and_then(|rv| rv.into_hashable()))
                     .collect::<Result<_>>();
 
                 Ok(value::Value::FrozenSet(Shared::new(new?)))
             }
             Value::Dict(v) => {
-                let inner = ref_cell.borrow_mut();
-                let inner_ptr = ref_cell.as_ptr().expose_provenance();
+                let inner_ptr = v.provenance();
 
                 if let Some(converted) = self.converted_rc.get(&inner_ptr) {
-                    Ok(value::Value::Shared(Rc::clone(converted)))
-                } else {
-                    let converted = Rc::new(RefCell::new(
-                        self.convert_value(inner.clone())
-                            .expect("failed to convert shared value"),
-                    ));
-
-                    self.converted_rc.insert(inner_ptr, Rc::clone(&converted));
-
-                    Ok(value::Value::Shared(converted))
+                    return Ok(converted.clone());
                 }
 
                 let mut map = BTreeMap::new();
-                for (key, value) in v {
-                    let real_key = self.convert_value(key).and_then(|rv| rv.into_hashable())?;
-                    let real_value = self.convert_value(value)?;
+                let v = v.inner();
+                for (key, value) in v.iter() {
+                    let real_key = self
+                        .convert_value(key.clone())
+                        .and_then(|rv| rv.into_hashable())?;
+
+                    let real_value = self.convert_value(value.clone())?;
                     map.insert(real_key, real_value);
                 }
 
-                Ok(value::Value::Dict(Shared::new(map)))
+                let new_shared = Shared::new(map);
+
+                let new_value = value::Value::Dict(new_shared.clone());
+                self.converted_rc.insert(inner_ptr, new_value.clone());
+
+                Ok(new_value)
             }
             Value::MemoRef(memo_id) => {
                 self.resolve_recursive(memo_id, (), |slf, (), value| slf.convert_value(value))
@@ -1266,9 +1321,16 @@ impl<'de: 'a, 'a, R: Read> de::Deserializer<'de> for &'a mut Deserializer<R> {
                 }
             }
             Value::F64(v) => visitor.visit_f64(v),
-            Value::Bytes(v) => visitor.visit_byte_buf(v),
-            Value::String(v) => visitor.visit_string(v),
+            Value::Bytes(v) => {
+                let v = v.into_raw_or_cloned();
+                visitor.visit_byte_buf(v)
+            }
+            Value::String(v) => {
+                let v = v.into_raw_or_cloned();
+                visitor.visit_string(v)
+            }
             Value::List(v) => {
+                let v = v.into_raw_or_cloned();
                 let len = v.len();
                 visitor.visit_seq(SeqAccess {
                     de: self,
@@ -1276,17 +1338,24 @@ impl<'de: 'a, 'a, R: Read> de::Deserializer<'de> for &'a mut Deserializer<R> {
                     len,
                 })
             }
-            Value::Tuple(v) => visitor.visit_seq(SeqAccess {
-                len: v.len(),
-                iter: v.into_iter(),
-                de: self,
-            }),
-            Value::Set(v) | Value::FrozenSet(v) => visitor.visit_seq(SeqAccess {
-                de: self,
-                len: v.len(),
-                iter: v.into_iter(),
-            }),
+            Value::Tuple(v) => {
+                let v = v.into_raw_or_cloned();
+                visitor.visit_seq(SeqAccess {
+                    len: v.len(),
+                    iter: v.into_iter(),
+                    de: self,
+                })
+            }
+            Value::Set(v) | Value::FrozenSet(v) => {
+                let v = v.into_raw_or_cloned();
+                visitor.visit_seq(SeqAccess {
+                    de: self,
+                    len: v.len(),
+                    iter: v.into_iter(),
+                })
+            }
             Value::Dict(v) => {
+                let v = v.into_raw_or_cloned();
                 let len = v.len();
                 visitor.visit_map(MapAccess {
                     de: self,
@@ -1307,9 +1376,6 @@ impl<'de: 'a, 'a, R: Read> de::Deserializer<'de> for &'a mut Deserializer<R> {
                 } else {
                     Err(Error::Syntax(ErrorCode::UnresolvedGlobal))
                 }
-            }
-            Value::Shared(inner) => {
-                panic!("deserializing shared is not supported");
             }
         }
     }
@@ -1363,7 +1429,9 @@ impl<'de: 'a, 'a, R: Read + 'a> de::EnumAccess<'de> for VariantAccess<'a, R> {
     fn variant_seed<V: de::DeserializeSeed<'de>>(self, seed: V) -> Result<(V::Value, Self)> {
         let value = self.de.get_next_value()?;
         match value {
-            Value::Tuple(mut v) => {
+            Value::Tuple(v) => {
+                let mut v = v.into_raw_or_cloned();
+
                 if v.len() == 2 {
                     let args = v.pop();
                     self.de.value = v.pop();
@@ -1376,7 +1444,9 @@ impl<'de: 'a, 'a, R: Read + 'a> de::EnumAccess<'de> for VariantAccess<'a, R> {
                     Ok((val, self))
                 }
             }
-            Value::Dict(mut v) => {
+            Value::Dict(v) => {
+                let mut v = v.into_raw_or_cloned();
+
                 if v.len() != 1 {
                     Err(Error::Syntax(ErrorCode::Structure(
                         "enum variants must \

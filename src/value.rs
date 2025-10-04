@@ -8,7 +8,7 @@
 
 use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive};
-use std::cell::{Ref, RefCell};
+use std::cell::{Ref, RefCell, RefMut};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -29,6 +29,20 @@ impl<T> Shared<T> {
     pub fn inner<'a>(&'a self) -> Ref<'a, T> {
         self.0.borrow()
     }
+
+    pub fn inner_mut<'a>(&'a self) -> RefMut<'a, T> {
+        self.0.borrow_mut()
+    }
+
+    pub fn provenance(&self) -> usize {
+        Rc::as_ptr(&self.0).expose_provenance()
+    }
+}
+
+impl<T> From<T> for Shared<T> {
+    fn from(value: T) -> Self {
+        Shared::new(value)
+    }
 }
 
 impl<T> Shared<T>
@@ -38,8 +52,7 @@ where
     pub fn into_raw_or_cloned(self) -> T {
         if Rc::strong_count(&self.0) == 1 {
             if let Some(inner) = Rc::into_inner(self.0) {
-                let inner = RefCell::into_inner(inner);
-                inner
+                RefCell::into_inner(inner)
             } else {
                 panic!("TOCTOU while trying to serialize Shared")
             }
@@ -132,20 +145,36 @@ pub enum HashableValue {
     FrozenSet(Shared<BTreeSet<HashableValue>>),
 }
 
-fn values_to_hashable(values: Shared<Vec<Value>>) -> Result<Vec<HashableValue>, Error> {
-    values
-        .into_raw_or_cloned()
-        .into_iter()
-        .map(Value::into_hashable)
-        .collect()
+fn values_to_raw_hashable(
+    values: Shared<Vec<Value>>,
+) -> Result<Shared<Vec<RawHashableValue>>, Error> {
+    Ok(values
+        .inner()
+        .iter()
+        .cloned()
+        .map(Value::into_raw_hashable)
+        .collect::<Result<Vec<_>, _>>()?
+        .into())
 }
 
-fn hashable_to_values(values: Shared<Vec<HashableValue>>) -> Vec<Value> {
+fn values_to_hashable(values: Shared<Vec<Value>>) -> Result<Shared<Vec<HashableValue>>, Error> {
+    Ok(values
+        .inner()
+        .iter()
+        .cloned()
+        .map(Value::into_hashable)
+        .collect::<Result<Vec<_>, _>>()?
+        .into())
+}
+
+fn hashable_to_values(values: Shared<Vec<HashableValue>>) -> Shared<Vec<Value>> {
     values
-        .into_raw_or_cloned()
-        .into_iter()
+        .inner()
+        .iter()
+        .cloned()
         .map(HashableValue::into_value)
-        .collect()
+        .collect::<Vec<_>>()
+        .into()
 }
 
 impl Value {
@@ -161,21 +190,31 @@ impl Value {
             Value::Bytes(b) => Ok(HashableValue::Bytes(b)),
             Value::String(s) => Ok(HashableValue::String(s)),
             Value::FrozenSet(v) => Ok(HashableValue::FrozenSet(v)),
-            Value::Tuple(v) => {
-                values_to_hashable(v).map(|values| HashableValue::Tuple(Shared::new(values)))
+            Value::Tuple(v) => values_to_hashable(v).map(HashableValue::Tuple),
+            _ => Err(Error::Syntax(ErrorCode::ValueNotHashable)),
+        }
+    }
+
+    pub(crate) fn into_raw_hashable(self) -> Result<RawHashableValue, Error> {
+        match self {
+            Value::None => Ok(RawHashableValue::None),
+            Value::Bool(b) => Ok(RawHashableValue::Bool(b)),
+            Value::I64(i) => Ok(RawHashableValue::I64(i)),
+            Value::Int(i) => Ok(RawHashableValue::Int(i)),
+            Value::F64(f) => Ok(RawHashableValue::F64(f)),
+            Value::Bytes(b) => Ok(RawHashableValue::Bytes(b)),
+            Value::String(s) => Ok(RawHashableValue::String(s)),
+            Value::FrozenSet(v) => {
+                let v = v.inner();
+                let new = BTreeSet::from_iter(v.iter().cloned().map(|v| {
+                    v.into_value()
+                        .into_raw_hashable()
+                        .expect("failed to round-trip")
+                }));
+
+                Ok(RawHashableValue::FrozenSet(Shared::new(new)))
             }
-            // Value::Shared(shared) => {
-            //     if Rc::strong_count(&shared) == 1 {
-            //         if let Some(inner) = Rc::into_inner(shared) {
-            //             let inner = RefCell::into_inner(inner);
-            //             inner.into_hashable()
-            //         } else {
-            //             panic!("TOCTOU while trying to serialize Shared")
-            //         }
-            //     } else {
-            //         shared.borrow().clone().into_hashable()
-            //     }
-            // }
+            Value::Tuple(v) => values_to_raw_hashable(v).map(RawHashableValue::Tuple),
             _ => Err(Error::Syntax(ErrorCode::ValueNotHashable)),
         }
     }
@@ -193,19 +232,7 @@ impl HashableValue {
             HashableValue::Bytes(b) => Value::Bytes(b),
             HashableValue::String(s) => Value::String(s),
             HashableValue::FrozenSet(v) => Value::FrozenSet(v),
-            HashableValue::Tuple(v) => Value::Tuple(Shared::new(hashable_to_values(v))),
-            // HashableValue::Shared(shared) => {
-            //     if Rc::strong_count(&shared) == 1 {
-            //         if let Some(inner) = Rc::into_inner(shared) {
-            //             let inner = RefCell::into_inner(inner);
-            //             inner.into_value()
-            //         } else {
-            //             panic!("TOCTOU while trying to serialize Shared")
-            //         }
-            //     } else {
-            //         shared.borrow().clone().into_value()
-            //     }
-            // }
+            HashableValue::Tuple(v) => Value::Tuple(hashable_to_values(v)),
         }
     }
 }
@@ -401,6 +428,11 @@ fn float_ord(f: f64, g: f64) -> Ordering {
     }
 }
 
+/// A "reasonable" total ordering for floats.
+fn total_float_ord(f: f64, g: f64) -> Ordering {
+    f.total_cmp(&g)
+}
+
 /// Ordering between floats and big integers.
 fn float_bigint_ord(bi: &BigInt, g: f64) -> Ordering {
     match bi.to_f64() {
@@ -411,6 +443,96 @@ fn float_bigint_ord(bi: &BigInt, g: f64) -> Ordering {
             } else {
                 Ordering::Less
             }
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Debug)]
+#[cfg_attr(feature = "variantly", derive(variantly::Variantly))]
+pub(crate) enum RawHashableValue {
+    /// None
+    None,
+    /// Boolean
+    Bool(bool),
+    /// Short integer
+    I64(i64),
+    /// Long integer
+    Int(BigInt),
+    /// Float
+    F64(f64),
+    /// Bytestring
+    Bytes(Shared<Vec<u8>>),
+    /// Unicode string
+    String(Shared<String>),
+    /// Tuple
+    Tuple(Shared<Vec<RawHashableValue>>),
+    /// Frozen (immutable) set
+    FrozenSet(Shared<BTreeSet<RawHashableValue>>),
+}
+
+impl std::cmp::Eq for RawHashableValue {}
+
+impl std::cmp::PartialOrd for RawHashableValue {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl std::cmp::Ord for RawHashableValue {
+    #[inline]
+    fn cmp(&self, other: &RawHashableValue) -> ::core::cmp::Ordering {
+        let __self_discr = match self {
+            RawHashableValue::None => 0,
+            RawHashableValue::Bool(_) => 1,
+            RawHashableValue::I64(_) => 2,
+            RawHashableValue::Int(_) => 3,
+            RawHashableValue::F64(_) => 4,
+            RawHashableValue::Bytes(_) => 5,
+            RawHashableValue::String(_) => 6,
+            RawHashableValue::Tuple(_) => 7,
+            RawHashableValue::FrozenSet(_) => 8,
+        };
+        let __arg1_discr = match other {
+            RawHashableValue::None => 0,
+            RawHashableValue::Bool(_) => 1,
+            RawHashableValue::I64(_) => 2,
+            RawHashableValue::Int(_) => 3,
+            RawHashableValue::F64(_) => 4,
+            RawHashableValue::Bytes(_) => 5,
+            RawHashableValue::String(_) => 6,
+            RawHashableValue::Tuple(_) => 7,
+            RawHashableValue::FrozenSet(_) => 8,
+        };
+
+        match ::core::cmp::Ord::cmp(&__self_discr, &__arg1_discr) {
+            ::core::cmp::Ordering::Equal => match (self, other) {
+                (RawHashableValue::Bool(__self_0), RawHashableValue::Bool(__arg1_0)) => {
+                    ::core::cmp::Ord::cmp(__self_0, __arg1_0)
+                }
+                (RawHashableValue::I64(__self_0), RawHashableValue::I64(__arg1_0)) => {
+                    ::core::cmp::Ord::cmp(__self_0, __arg1_0)
+                }
+                (RawHashableValue::Int(__self_0), RawHashableValue::Int(__arg1_0)) => {
+                    ::core::cmp::Ord::cmp(__self_0, __arg1_0)
+                }
+                (RawHashableValue::Bytes(__self_0), RawHashableValue::Bytes(__arg1_0)) => {
+                    ::core::cmp::Ord::cmp(__self_0, __arg1_0)
+                }
+                (RawHashableValue::String(__self_0), RawHashableValue::String(__arg1_0)) => {
+                    ::core::cmp::Ord::cmp(__self_0, __arg1_0)
+                }
+                (RawHashableValue::Tuple(__self_0), RawHashableValue::Tuple(__arg1_0)) => {
+                    ::core::cmp::Ord::cmp(__self_0, __arg1_0)
+                }
+                (RawHashableValue::FrozenSet(__self_0), RawHashableValue::FrozenSet(__arg1_0)) => {
+                    ::core::cmp::Ord::cmp(__self_0, __arg1_0)
+                }
+                (RawHashableValue::F64(__self_0), RawHashableValue::F64(__self_1)) => {
+                    total_float_ord(*__self_0, *__self_1)
+                }
+                _ => ::core::cmp::Ordering::Equal,
+            },
+            cmp => cmp,
         }
     }
 }
