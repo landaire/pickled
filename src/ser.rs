@@ -99,8 +99,8 @@ impl<W: io::Write> Serializer<W> {
     }
 
     #[inline]
-    fn write_opcode(&mut self, opcode: u8) -> Result<()> {
-        self.writer.write_all(&[opcode]).map_err(From::from)
+    fn write_opcode(&mut self, opcode: Opcode) -> Result<()> {
+        self.writer.write_all(&[opcode.into()]).map_err(From::from)
     }
 
     fn serialize_hashable_value(&mut self, value: &HashableValue) -> Result<()> {
@@ -130,28 +130,28 @@ impl<W: io::Write> Serializer<W> {
             Value::Bytes(ref b) => self.serialize_bytes(&b.inner()),
             Value::String(ref s) => self.serialize_str(&s.inner()),
             Value::List(ref l) => {
-                self.write_opcode(EMPTY_LIST)?;
+                self.write_opcode(Opcode::EmptyList)?;
                 for chunk in l.inner().chunks(1000) {
-                    self.write_opcode(MARK)?;
+                    self.write_opcode(Opcode::Mark)?;
                     for item in chunk {
                         self.serialize_value(item)?;
                     }
-                    self.write_opcode(APPENDS)?;
+                    self.write_opcode(Opcode::Appends)?;
                 }
                 Ok(())
             }
             Value::Dict(ref d) => {
-                self.write_opcode(EMPTY_DICT)?;
-                self.write_opcode(MARK)?;
+                self.write_opcode(Opcode::EmptyDict)?;
+                self.write_opcode(Opcode::Mark)?;
                 for (n, (key, value)) in d.inner().iter().enumerate() {
                     if n % 1000 == 999 {
-                        self.write_opcode(SETITEMS)?;
-                        self.write_opcode(MARK)?;
+                        self.write_opcode(Opcode::SetItems)?;
+                        self.write_opcode(Opcode::Mark)?;
                     }
                     self.serialize_hashable_value(key)?;
                     self.serialize_value(value)?;
                 }
-                self.write_opcode(SETITEMS)?;
+                self.write_opcode(Opcode::SetItems)?;
                 Ok(())
             }
             Value::Int(ref i) => self.serialize_bigint(i),
@@ -183,10 +183,10 @@ impl<W: io::Write> Serializer<W> {
             bytes
         };
         if bytes.len() < 256 {
-            self.write_opcode(LONG1)?;
+            self.write_opcode(Opcode::Long1)?;
             self.writer.write_u8(bytes.len() as u8)?;
         } else {
-            self.write_opcode(LONG4)?;
+            self.write_opcode(Opcode::Long4)?;
             self.writer.write_u32::<LittleEndian>(bytes.len() as u32)?;
         }
         self.writer.write_all(&bytes).map_err(From::from)
@@ -197,31 +197,31 @@ impl<W: io::Write> Serializer<W> {
         F: Fn(&mut Self, &T) -> Result<()>,
     {
         if t.is_empty() {
-            self.write_opcode(EMPTY_TUPLE)
+            self.write_opcode(Opcode::EmptyTuple)
         } else if t.len() == 1 {
             f(self, &t[0])?;
-            self.write_opcode(TUPLE1)
+            self.write_opcode(Opcode::Tuple1)
         } else if t.len() == 2 {
             f(self, &t[0])?;
             f(self, &t[1])?;
-            self.write_opcode(TUPLE2)
+            self.write_opcode(Opcode::Tuple2)
         } else if t.len() == 3 {
             f(self, &t[0])?;
             f(self, &t[1])?;
             f(self, &t[2])?;
-            self.write_opcode(TUPLE3)
+            self.write_opcode(Opcode::Tuple3)
         } else {
-            self.write_opcode(MARK)?;
+            self.write_opcode(Opcode::Mark)?;
             for item in t.iter() {
                 f(self, item)?;
             }
-            self.write_opcode(TUPLE)?;
+            self.write_opcode(Opcode::Tuple)?;
             Ok(())
         }
     }
 
     fn serialize_set(&mut self, items: &BTreeSet<HashableValue>, name: &[u8]) -> Result<()> {
-        self.write_opcode(GLOBAL)?;
+        self.write_opcode(Opcode::Global)?;
         if self.options.proto == PickleProto::V3 {
             self.writer.write_all(b"builtins\n")?;
         } else {
@@ -229,18 +229,18 @@ impl<W: io::Write> Serializer<W> {
         }
         self.writer.write_all(name)?;
         self.writer.write_all(b"\n")?;
-        self.write_opcode(EMPTY_LIST)?;
-        self.write_opcode(MARK)?;
+        self.write_opcode(Opcode::EmptyList)?;
+        self.write_opcode(Opcode::Mark)?;
         for (n, item) in items.iter().enumerate() {
             if n % 1000 == 999 {
-                self.write_opcode(APPENDS)?;
-                self.write_opcode(MARK)?;
+                self.write_opcode(Opcode::Appends)?;
+                self.write_opcode(Opcode::Mark)?;
             }
             self.serialize_hashable_value(item)?;
         }
-        self.write_opcode(APPENDS)?;
-        self.write_opcode(TUPLE1)?;
-        self.write_opcode(REDUCE)
+        self.write_opcode(Opcode::Appends)?;
+        self.write_opcode(Opcode::Tuple1)?;
+        self.write_opcode(Opcode::Reduce)
     }
 }
 
@@ -259,8 +259,8 @@ impl<'a, W: io::Write> ser::SerializeSeq for Compound<'a, W> {
         // Batch appends as in Python pickle
         *self.state.as_mut().unwrap() += 1;
         if self.state.unwrap() == 1000 {
-            self.ser.write_opcode(APPENDS)?;
-            self.ser.write_opcode(MARK)?;
+            self.ser.write_opcode(Opcode::Appends)?;
+            self.ser.write_opcode(Opcode::Mark)?;
             self.state = Some(0);
         }
         Ok(())
@@ -269,7 +269,7 @@ impl<'a, W: io::Write> ser::SerializeSeq for Compound<'a, W> {
     #[inline]
     fn end(self) -> Result<()> {
         if self.state.is_some() {
-            self.ser.write_opcode(APPENDS)?;
+            self.ser.write_opcode(Opcode::Appends)?;
         }
         Ok(())
     }
@@ -287,7 +287,7 @@ impl<'a, W: io::Write> ser::SerializeTuple for Compound<'a, W> {
     #[inline]
     fn end(self) -> Result<()> {
         if self.state.is_some() {
-            self.ser.write_opcode(TUPLE)?;
+            self.ser.write_opcode(Opcode::Tuple)?;
         }
         Ok(())
     }
@@ -319,11 +319,11 @@ impl<'a, W: io::Write> ser::SerializeTupleVariant for Compound<'a, W> {
 
     #[inline]
     fn end(self) -> Result<()> {
-        self.ser.write_opcode(APPENDS)?;
+        self.ser.write_opcode(Opcode::Appends)?;
         if self.ser.options.compat_enum_repr {
-            self.ser.write_opcode(TUPLE2)
+            self.ser.write_opcode(Opcode::Tuple2)
         } else {
-            self.ser.write_opcode(SETITEM)
+            self.ser.write_opcode(Opcode::SetItem)
         }
     }
 }
@@ -343,8 +343,8 @@ impl<'a, W: io::Write> ser::SerializeMap for Compound<'a, W> {
         // Batch appends as in Python pickle
         *self.state.as_mut().unwrap() += 1;
         if self.state.unwrap() == 1000 {
-            self.ser.write_opcode(SETITEMS)?;
-            self.ser.write_opcode(MARK)?;
+            self.ser.write_opcode(Opcode::SetItems)?;
+            self.ser.write_opcode(Opcode::Mark)?;
             self.state = Some(0);
         }
         Ok(())
@@ -353,7 +353,7 @@ impl<'a, W: io::Write> ser::SerializeMap for Compound<'a, W> {
     #[inline]
     fn end(self) -> Result<()> {
         if self.state.is_some() {
-            self.ser.write_opcode(SETITEMS)?;
+            self.ser.write_opcode(Opcode::SetItems)?;
         }
         Ok(())
     }
@@ -395,12 +395,12 @@ impl<'a, W: io::Write> ser::SerializeStructVariant for Compound<'a, W> {
     #[inline]
     fn end(self) -> Result<()> {
         if self.state.is_some() {
-            self.ser.write_opcode(SETITEMS)?;
+            self.ser.write_opcode(Opcode::SetItems)?;
         }
         if self.ser.options.compat_enum_repr {
-            self.ser.write_opcode(TUPLE2)
+            self.ser.write_opcode(Opcode::Tuple2)
         } else {
-            self.ser.write_opcode(SETITEM)
+            self.ser.write_opcode(Opcode::SetItem)
         }
     }
 }
@@ -419,16 +419,16 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
 
     #[inline]
     fn serialize_bool(self, value: bool) -> Result<()> {
-        self.write_opcode(if value { NEWTRUE } else { NEWFALSE })
+        self.write_opcode(if value { Opcode::NewTrue } else { Opcode::NewFalse })
     }
 
     #[inline]
     fn serialize_i8(self, value: i8) -> Result<()> {
         if value > 0 {
-            self.write_opcode(BININT1)?;
+            self.write_opcode(Opcode::BinInt1)?;
             self.writer.write_i8(value).map_err(From::from)
         } else {
-            self.write_opcode(BININT)?;
+            self.write_opcode(Opcode::BinInt)?;
             self.writer
                 .write_i32::<LittleEndian>(value.into())
                 .map_err(From::from)
@@ -438,12 +438,12 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
     #[inline]
     fn serialize_i16(self, value: i16) -> Result<()> {
         if value > 0 {
-            self.write_opcode(BININT2)?;
+            self.write_opcode(Opcode::BinInt2)?;
             self.writer
                 .write_i16::<LittleEndian>(value)
                 .map_err(From::from)
         } else {
-            self.write_opcode(BININT)?;
+            self.write_opcode(Opcode::BinInt)?;
             self.writer
                 .write_i32::<LittleEndian>(value.into())
                 .map_err(From::from)
@@ -452,7 +452,7 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
 
     #[inline]
     fn serialize_i32(self, value: i32) -> Result<()> {
-        self.write_opcode(BININT)?;
+        self.write_opcode(Opcode::BinInt)?;
         self.writer
             .write_i32::<LittleEndian>(value)
             .map_err(From::from)
@@ -461,12 +461,12 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
     #[inline]
     fn serialize_i64(self, value: i64) -> Result<()> {
         if (-0x8000_0000..0x8000_0000).contains(&value) {
-            self.write_opcode(BININT)?;
+            self.write_opcode(Opcode::BinInt)?;
             self.writer
                 .write_i32::<LittleEndian>(value as i32)
                 .map_err(From::from)
         } else {
-            self.write_opcode(LONG1)?;
+            self.write_opcode(Opcode::Long1)?;
             self.writer.write_i8(8)?;
             self.writer
                 .write_i64::<LittleEndian>(value)
@@ -476,13 +476,13 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
 
     #[inline]
     fn serialize_u8(self, value: u8) -> Result<()> {
-        self.write_opcode(BININT1)?;
+        self.write_opcode(Opcode::BinInt1)?;
         self.writer.write_u8(value).map_err(From::from)
     }
 
     #[inline]
     fn serialize_u16(self, value: u16) -> Result<()> {
-        self.write_opcode(BININT2)?;
+        self.write_opcode(Opcode::BinInt2)?;
         self.writer
             .write_u16::<LittleEndian>(value)
             .map_err(From::from)
@@ -491,12 +491,12 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
     #[inline]
     fn serialize_u32(self, value: u32) -> Result<()> {
         if value < 0x8000_0000 {
-            self.write_opcode(BININT)?;
+            self.write_opcode(Opcode::BinInt)?;
             self.writer
                 .write_u32::<LittleEndian>(value)
                 .map_err(From::from)
         } else {
-            self.write_opcode(LONG1)?;
+            self.write_opcode(Opcode::Long1)?;
             self.writer.write_i8(5)?;
             self.writer.write_u32::<LittleEndian>(value)?;
             // The final byte has to be there, otherwise we'd get the unsigned
@@ -508,12 +508,12 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
     #[inline]
     fn serialize_u64(self, value: u64) -> Result<()> {
         if value < 0x8000_0000 {
-            self.write_opcode(BININT)?;
+            self.write_opcode(Opcode::BinInt)?;
             self.writer
                 .write_u32::<LittleEndian>(value as u32)
                 .map_err(From::from)
         } else {
-            self.write_opcode(LONG1)?;
+            self.write_opcode(Opcode::Long1)?;
             self.writer.write_i8(9)?;
             self.writer.write_u64::<LittleEndian>(value)?;
             // The final byte has to be there, otherwise we could get the
@@ -524,7 +524,7 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
 
     #[inline]
     fn serialize_f32(self, value: f32) -> Result<()> {
-        self.write_opcode(BINFLOAT)?;
+        self.write_opcode(Opcode::BinFloat)?;
         // Yes, this one is big endian.
         self.writer
             .write_f64::<BigEndian>(value.into())
@@ -533,7 +533,7 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
 
     #[inline]
     fn serialize_f64(self, value: f64) -> Result<()> {
-        self.write_opcode(BINFLOAT)?;
+        self.write_opcode(Opcode::BinFloat)?;
         self.writer
             .write_f64::<BigEndian>(value)
             .map_err(From::from)
@@ -548,7 +548,7 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
 
     #[inline]
     fn serialize_str(self, value: &str) -> Result<()> {
-        self.write_opcode(BINUNICODE)?;
+        self.write_opcode(Opcode::BinUnicode)?;
         self.writer.write_u32::<LittleEndian>(value.len() as u32)?;
         self.writer.write_all(value.as_bytes()).map_err(From::from)
     }
@@ -557,10 +557,10 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
     fn serialize_bytes(self, value: &[u8]) -> Result<()> {
         if self.options.proto == PickleProto::V3 {
             if value.len() < 256 {
-                self.write_opcode(SHORT_BINBYTES)?;
+                self.write_opcode(Opcode::ShortBinBytes)?;
                 self.writer.write_u8(value.len() as u8)?;
             } else {
-                self.write_opcode(BINBYTES)?;
+                self.write_opcode(Opcode::BinBytes)?;
                 self.writer.write_u32::<LittleEndian>(value.len() as u32)?;
             }
             self.writer.write_all(value).map_err(From::from)
@@ -572,7 +572,7 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
             // does this trick)
             // TODO: we could keep track of 'codecs\nencode' and 'latin1' in
             // the memo rather than writing them out for each byte string
-            self.write_opcode(GLOBAL)?;
+            self.write_opcode(Opcode::Global)?;
             self.writer.write_all(b"_codecs\nencode\n")?;
             // BINUNICODE needs a utf8-encoded string, but we're pretending ours
             // has a latin1 encoding. Happily, the byte values of an encoded latin1
@@ -582,8 +582,8 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
             let utf8_value: String = value.iter().map(|&c| c as char).collect();
             self.serialize_str(&utf8_value)?;
             self.serialize_str("latin1")?;
-            self.write_opcode(TUPLE2)?;
-            self.write_opcode(REDUCE)
+            self.write_opcode(Opcode::Tuple2)?;
+            self.write_opcode(Opcode::Reduce)
         }
     }
 
@@ -591,12 +591,12 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
     fn serialize_unit(self) -> Result<()> {
         // Although Python has an empty tuple, we use None here for compatibility
         // with other serialization formats.
-        self.write_opcode(NONE)
+        self.write_opcode(Opcode::None)
     }
 
     #[inline]
     fn serialize_unit_struct(self, _name: &'static str) -> Result<()> {
-        self.write_opcode(NONE)
+        self.write_opcode(Opcode::None)
     }
 
     #[inline]
@@ -608,7 +608,7 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
     ) -> Result<()> {
         self.serialize_str(variant)?;
         if self.options.compat_enum_repr {
-            self.write_opcode(TUPLE1)
+            self.write_opcode(Opcode::Tuple1)
         } else {
             Ok(())
         }
@@ -634,12 +634,12 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
         if self.options.compat_enum_repr {
             self.serialize_str(variant)?;
             value.serialize(&mut *self)?;
-            self.write_opcode(TUPLE2)
+            self.write_opcode(Opcode::Tuple2)
         } else {
-            self.write_opcode(EMPTY_DICT)?;
+            self.write_opcode(Opcode::EmptyDict)?;
             self.serialize_str(variant)?;
             value.serialize(&mut *self)?;
-            self.write_opcode(SETITEM)
+            self.write_opcode(Opcode::SetItem)
         }
     }
 
@@ -655,14 +655,14 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
 
     #[inline]
     fn serialize_seq(self, len: Option<usize>) -> Result<Self::SerializeSeq> {
-        self.write_opcode(EMPTY_LIST)?;
+        self.write_opcode(Opcode::EmptyList)?;
         match len {
             Some(len) if len == 0 => Ok(Compound {
                 ser: self,
                 state: None,
             }),
             _ => {
-                self.write_opcode(MARK)?;
+                self.write_opcode(Opcode::Mark)?;
                 Ok(Compound {
                     ser: self,
                     state: Some(0),
@@ -674,13 +674,13 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
     #[inline]
     fn serialize_tuple(self, len: usize) -> Result<Self::SerializeTuple> {
         if len == 0 {
-            self.write_opcode(EMPTY_TUPLE)?;
+            self.write_opcode(Opcode::EmptyTuple)?;
             Ok(Compound {
                 ser: self,
                 state: None,
             })
         } else {
-            self.write_opcode(MARK)?;
+            self.write_opcode(Opcode::Mark)?;
             Ok(Compound {
                 ser: self,
                 state: Some(0),
@@ -706,11 +706,11 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
         _len: usize,
     ) -> Result<Self::SerializeTupleVariant> {
         if !self.options.compat_enum_repr {
-            self.write_opcode(EMPTY_DICT)?;
+            self.write_opcode(Opcode::EmptyDict)?;
         }
         self.serialize_str(variant)?;
-        self.write_opcode(EMPTY_LIST)?;
-        self.write_opcode(MARK)?;
+        self.write_opcode(Opcode::EmptyList)?;
+        self.write_opcode(Opcode::Mark)?;
         Ok(Compound {
             ser: self,
             state: None,
@@ -719,14 +719,14 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
 
     #[inline]
     fn serialize_map(self, len: Option<usize>) -> Result<Self::SerializeMap> {
-        self.write_opcode(EMPTY_DICT)?;
+        self.write_opcode(Opcode::EmptyDict)?;
         match len {
             Some(len) if len == 0 => Ok(Compound {
                 ser: self,
                 state: None,
             }),
             _ => {
-                self.write_opcode(MARK)?;
+                self.write_opcode(Opcode::Mark)?;
                 Ok(Compound {
                     ser: self,
                     state: Some(0),
@@ -749,7 +749,7 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
         len: usize,
     ) -> Result<Self::SerializeStructVariant> {
         if !self.options.compat_enum_repr {
-            self.write_opcode(EMPTY_DICT)?;
+            self.write_opcode(Opcode::EmptyDict)?;
         }
         self.serialize_str(variant)?;
         self.serialize_map(Some(len))
@@ -760,7 +760,7 @@ fn wrap_write<W: io::Write, F>(mut writer: W, inner: F, options: SerOptions) -> 
 where
     F: FnOnce(&mut Serializer<W>) -> Result<()>,
 {
-    writer.write_all(&[PROTO])?;
+    writer.write_all(&[Opcode::Proto.into()])?;
     if options.proto == PickleProto::V3 {
         writer.write_all(b"\x03")?;
     } else {
@@ -769,7 +769,7 @@ where
     let mut ser = Serializer::new(writer, options);
     inner(&mut ser)?;
     let mut writer = ser.into_inner();
-    writer.write_all(&[STOP]).map_err(From::from)
+    writer.write_all(&[Opcode::Stop.into()]).map_err(From::from)
 }
 
 /// Encode the value into a pickle stream.
