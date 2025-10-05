@@ -43,11 +43,11 @@ macro_rules! hpyobj {
 }
 
 mod struct_tests {
+    use crate::value::Shared;
     use crate::{
         HashableValue, SerOptions, Value, from_slice, from_value, to_value, to_vec,
         value_from_slice, value_to_vec,
     };
-    use crate::value::Shared;
     use serde::{de, ser};
     use serde_derive::{Deserialize, Serialize};
     use std::collections::BTreeMap;
@@ -355,6 +355,7 @@ mod value_tests {
         // differently depending on major version.
         match &mut obj {
             Value::Dict(map) => {
+                let mut map = map.inner_mut();
                 if pyver == 2 {
                     map.insert(hpyobj!(i = 7), pyobj!(d={bb=b"attr" => i=5}));
                 } else {
@@ -386,13 +387,47 @@ mod value_tests {
     }
 
     #[test]
+    // test fails because of something I fixed?
     fn recursive() {
         for proto in &[0, 1, 2, 3, 4, 5] {
             let file =
                 File::open(format!("test/data/test_recursive_proto{}.pickle", proto)).unwrap();
             match value_from_reader(file, Default::default()) {
                 Err(Error::Syntax(ErrorCode::Recursive)) => {}
-                _ => assert!(false, "wrong/no error returned for recursive structure"),
+                value => {
+                    panic!(
+                        "wrong/no error returned for recursive structure, {:?}",
+                        value
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn recursive_with_replace_reconstructor() {
+        for proto in &[0, 1, 2, 3, 4, 5] {
+            let file =
+                File::open(format!("test/data/test_recursive_proto{}.pickle", proto)).unwrap();
+            match value_from_reader(
+                file,
+                DeOptions::new().replace_reconstructor_objects_structures(),
+            ) {
+                Err(Error::Syntax(ErrorCode::Recursive)) => {}
+                Ok(value) => {
+                    let list = value.list_ref().expect("recursive structure is not a list");
+                    let list_inner = list.inner();
+                    assert!(
+                        list_inner.is_empty(),
+                        "recursive list structure is not empty"
+                    );
+                }
+                value => {
+                    panic!(
+                        "wrong/no error returned for recursive structure, {:?}",
+                        value
+                    );
+                }
             }
         }
     }
@@ -413,6 +448,7 @@ mod value_tests {
     }
 
     #[test]
+    // test fails because of round-trip ordering on sets/dicts
     fn qc_roundtrip() {
         fn roundtrip(original: Value) {
             let vec: Vec<_> = value_to_vec(&original, Default::default()).unwrap();
@@ -446,7 +482,7 @@ mod value_tests {
 
     #[test]
     fn bytestring_v2_py3_roundtrip() {
-        let original = Value::Bytes(b"123\xff\xfe".to_vec());
+        let original = Value::Bytes(b"123\xff\xfe".to_vec().into());
         let vec: Vec<_> = value_to_vec(&original, SerOptions::new().proto_v2()).unwrap();
         // Python 3 default deserializer attempts to decode strings
         let mut de = Deserializer::new(vec.as_slice(), DeOptions::new().decode_strings());
