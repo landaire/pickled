@@ -1,7 +1,12 @@
 Serde Pickle Serialization Library
 ==================================
 
-This is a fork of https://crates.io/crates/serde-pickle with support for recursive data structures and [`variantly`](https://docs.rs/variantly/latest/variantly/) support for `Value` types to make working with pickled data easier.
+This is a fork of https://crates.io/crates/serde-pickle with the following notable differences:
+
+1. Support for recursive data structures
+2. Support for refcounted data objects
+3. Support for treating `_reconstructor` objects as dictionaries
+4. [`variantly`](https://docs.rs/variantly/latest/variantly/) support for `Value` types to make working with pickled data easier.
 
 **THIS CRATE IS NOT INTENDED FOR WIDE USE, AND I MAKE NO GUARANTEES ABOUT BEING A GOOD PROJECT MAINTAINER** *(although I will not be evil, I just cannot guarantee that I can support this crate)*
 

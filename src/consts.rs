@@ -13,7 +13,6 @@ use std::convert::TryFrom;
 
 use crate::ErrorCode;
 
-
 #[repr(u8)]
 #[derive(Debug, Copy, Clone)]
 pub enum Opcode {

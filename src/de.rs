@@ -28,7 +28,7 @@ use std::str;
 use std::str::FromStr;
 use std::vec;
 
-use crate::value::{RawHashableValue, Shared};
+use crate::value::{RawHashableValue, Shared, SharedFrozen};
 
 use super::consts::*;
 use super::error::{Error, ErrorCode, Result};
@@ -72,12 +72,12 @@ enum Value {
     I64(i64),
     Int(BigInt),
     F64(f64),
-    Bytes(Shared<Vec<u8>>),
-    String(Shared<String>),
+    Bytes(SharedFrozen<Vec<u8>>),
+    String(SharedFrozen<String>),
     List(Shared<Vec<Value>>),
-    Tuple(Shared<Vec<Value>>),
+    Tuple(SharedFrozen<Vec<Value>>),
     Set(Shared<Vec<Value>>),
-    FrozenSet(Shared<Vec<Value>>),
+    FrozenSet(SharedFrozen<Vec<Value>>),
     Dict(Shared<Vec<(Value, Value)>>),
 }
 
@@ -239,13 +239,13 @@ impl<R: Read> Deserializer<R> {
             if let Some(cached) = self.tuple_rc.get(&hashable_items) {
                 cached.clone()
             } else {
-                let value = Value::Tuple(Shared::new(items.clone()));
+                let value = Value::Tuple(SharedFrozen::new(items.clone()));
                 self.tuple_rc.insert(hashable_items, value.clone());
 
                 value
             }
         } else {
-            Value::Tuple(Shared::new(items))
+            Value::Tuple(SharedFrozen::new(items))
         }
     }
 
@@ -415,15 +415,15 @@ impl<R: Read> Deserializer<R> {
                 // Length-prefixed (byte)strings
                 Opcode::ShortBinBytes => {
                     let string = self.read_u8_prefixed_bytes()?;
-                    self.stack.push(Value::Bytes(Shared::new(string)));
+                    self.stack.push(Value::Bytes(SharedFrozen::new(string)));
                 }
                 Opcode::BinBytes => {
                     let string = self.read_u32_prefixed_bytes()?;
-                    self.stack.push(Value::Bytes(Shared::new(string)));
+                    self.stack.push(Value::Bytes(SharedFrozen::new(string)));
                 }
                 Opcode::BinBytes8 => {
                     let string = self.read_u64_prefixed_bytes()?;
-                    self.stack.push(Value::Bytes(Shared::new(string)));
+                    self.stack.push(Value::Bytes(SharedFrozen::new(string)));
                 }
                 Opcode::ShortBinString => {
                     let string = self.read_u8_prefixed_bytes()?;
@@ -452,7 +452,7 @@ impl<R: Read> Deserializer<R> {
                 }
                 Opcode::ByteArray8 => {
                     let string = self.read_u64_prefixed_bytes()?;
-                    self.stack.push(Value::Bytes(Shared::new(string)));
+                    self.stack.push(Value::Bytes(SharedFrozen::new(string)));
                 }
 
                 // Tuples
@@ -523,7 +523,7 @@ impl<R: Read> Deserializer<R> {
                 Opcode::EmptySet => self.stack.push(Value::Set(Shared::new(Vec::new()))),
                 Opcode::FrozenSet => {
                     let items = self.pop_mark()?;
-                    self.stack.push(Value::FrozenSet(Shared::new(items)));
+                    self.stack.push(Value::FrozenSet(SharedFrozen::new(items)));
                 }
                 Opcode::AddItems => {
                     let items = self.pop_mark()?;
@@ -972,7 +972,7 @@ impl<R: Read> Deserializer<R> {
                 _ => result.push(b as char),
             }
         }
-        Ok(Value::String(Shared::new(result)))
+        Ok(Value::String(SharedFrozen::new(result)))
     }
 
     // Decode a string - either as Unicode or as bytes.
@@ -980,14 +980,14 @@ impl<R: Read> Deserializer<R> {
         if self.options.decode_strings {
             self.decode_unicode(string)
         } else {
-            Ok(Value::Bytes(Shared::new(string)))
+            Ok(Value::Bytes(SharedFrozen::new(string)))
         }
     }
 
     // Decode a Unicode string from UTF-8.
     fn decode_unicode(&self, string: Vec<u8>) -> Result<Value> {
         match String::from_utf8(string) {
-            Ok(v) => Ok(Value::String(Shared::new(v))),
+            Ok(v) => Ok(Value::String(SharedFrozen::new(v))),
             Err(_) => self.error(ErrorCode::StringNotUTF8),
         }
     }
@@ -1104,26 +1104,27 @@ impl<R: Read> Deserializer<R> {
     }
 
     // Handle the REDUCE opcode for the few Global objects we support.
-    fn reduce_global(&mut self, global: Value, argtuple: Shared<Vec<Value>>) -> Result<()> {
+    fn reduce_global(&mut self, global: Value, argtuple: SharedFrozen<Vec<Value>>) -> Result<()> {
+        let mut argtuple = argtuple.into_raw_or_cloned();
         match global {
-            Value::Global(Global::Set) => match self.resolve(argtuple.inner_mut().pop()) {
+            Value::Global(Global::Set) => match self.resolve(argtuple.pop()) {
                 Some(Value::List(items)) => {
                     self.stack.push(Value::Set(items));
                     Ok(())
                 }
                 _ => self.error(ErrorCode::InvalidValue("set() arg".into())),
             },
-            Value::Global(Global::Frozenset) => match self.resolve(argtuple.inner_mut().pop()) {
+            Value::Global(Global::Frozenset) => match self.resolve(argtuple.pop()) {
                 Some(Value::List(items)) => {
-                    self.stack.push(Value::FrozenSet(items));
+                    self.stack.push(Value::FrozenSet(items.into()));
                     Ok(())
                 }
                 _ => self.error(ErrorCode::InvalidValue("frozenset() arg".into())),
             },
             Value::Global(Global::Bytearray) => {
                 // On Py2, the call is encoded as bytearray(u"foo", "latin-1").
-                argtuple.inner_mut().truncate(1);
-                match self.resolve(argtuple.inner_mut().pop()) {
+                argtuple.truncate(1);
+                match self.resolve(argtuple.pop()) {
                     Some(Value::Bytes(bytes)) => {
                         self.stack.push(Value::Bytes(bytes));
                         Ok(())
@@ -1131,7 +1132,7 @@ impl<R: Read> Deserializer<R> {
                     Some(Value::String(string)) => {
                         // The code points in the string are actually bytes values.
                         // So we need to collect them individually.
-                        self.stack.push(Value::Bytes(Shared::new(
+                        self.stack.push(Value::Bytes(SharedFrozen::new(
                             string.inner().chars().map(|ch| ch as u32 as u8).collect(),
                         )));
                         Ok(())
@@ -1139,14 +1140,14 @@ impl<R: Read> Deserializer<R> {
                     _ => self.error(ErrorCode::InvalidValue("bytearray() arg".into())),
                 }
             }
-            Value::Global(Global::List) => match self.resolve(argtuple.inner_mut().pop()) {
+            Value::Global(Global::List) => match self.resolve(argtuple.pop()) {
                 Some(Value::List(items)) => {
                     self.stack.push(Value::List(items));
                     Ok(())
                 }
                 _ => self.error(ErrorCode::InvalidValue("list() arg".into())),
             },
-            Value::Global(Global::Int) => match self.resolve(argtuple.inner_mut().pop()) {
+            Value::Global(Global::Int) => match self.resolve(argtuple.pop()) {
                 Some(Value::Int(integer)) => {
                     self.stack.push(Value::Int(integer));
                     Ok(())
@@ -1155,26 +1156,26 @@ impl<R: Read> Deserializer<R> {
             },
             Value::Global(Global::Encode) => {
                 // Byte object encoded as _codecs.encode(x, 'latin1')
-                match self.resolve(argtuple.inner_mut().pop()) {
+                match self.resolve(argtuple.pop()) {
                     // Encoding, always latin1
                     Some(Value::String(_)) => {}
                     _ => return self.error(ErrorCode::InvalidValue("encode() arg".into())),
                 }
-                match self.resolve(argtuple.inner_mut().pop()) {
+                match self.resolve(argtuple.pop()) {
                     Some(Value::String(s)) => {
                         // Now we have to convert the string to latin-1
                         // encoded bytes.  It never contains codepoints
                         // above 0xff.
                         let bytes = s.inner().chars().map(|ch| ch as u8).collect();
-                        self.stack.push(Value::Bytes(Shared::new(bytes)));
+                        self.stack.push(Value::Bytes(SharedFrozen::new(bytes)));
                         Ok(())
                     }
                     _ => self.error(ErrorCode::InvalidValue("encode() arg".into())),
                 }
             }
             Value::Global(Global::Reconstructor) => {
-                let _args = self.resolve(argtuple.inner_mut().pop());
-                let _func = self.resolve(argtuple.inner_mut().pop());
+                let _args = self.resolve(argtuple.pop());
+                let _func = self.resolve(argtuple.pop());
 
                 let value = if self.options.replace_reconstructor_objects_with_dict {
                     Value::Dict(Shared::new(Default::default()))
@@ -1263,7 +1264,7 @@ impl<R: Read> Deserializer<R> {
                     .map(|v| self.convert_value(v.clone()))
                     .collect::<Result<Vec<_>>>()?;
 
-                let new_shared = Shared::new(new);
+                let new_shared = SharedFrozen::new(new);
 
                 let new_value = value::Value::Tuple(new_shared.clone());
                 self.converted_rc.insert(inner_ptr, new_value.clone());
@@ -1287,7 +1288,7 @@ impl<R: Read> Deserializer<R> {
                     .map(|v| self.convert_value(v).and_then(|rv| rv.into_hashable()))
                     .collect::<Result<_>>();
 
-                Ok(value::Value::FrozenSet(Shared::new(new?)))
+                Ok(value::Value::FrozenSet(SharedFrozen::new(new?)))
             }
             Value::Dict(v) => {
                 let inner_ptr = v.provenance();
@@ -1381,7 +1382,15 @@ impl<'de: 'a, 'a, R: Read> de::Deserializer<'de> for &'a mut Deserializer<R> {
                     de: self,
                 })
             }
-            Value::Set(v) | Value::FrozenSet(v) => {
+            Value::Set(v) => {
+                let v = v.into_raw_or_cloned();
+                visitor.visit_seq(SeqAccess {
+                    de: self,
+                    len: v.len(),
+                    iter: v.into_iter(),
+                })
+            }
+            Value::FrozenSet(v) => {
                 let v = v.into_raw_or_cloned();
                 visitor.visit_seq(SeqAccess {
                     de: self,

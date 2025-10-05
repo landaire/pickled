@@ -46,6 +46,15 @@ impl<T> From<T> for Shared<T> {
     }
 }
 
+impl<T> From<SharedFrozen<T>> for Shared<T>
+where
+    T: Clone,
+{
+    fn from(value: SharedFrozen<T>) -> Self {
+        Shared::new(value.into_raw_or_cloned())
+    }
+}
+
 impl<T> Shared<T>
 where
     T: Clone,
@@ -79,6 +88,71 @@ where
     }
 }
 
+#[derive(Debug, Eq, PartialOrd, Ord, Clone)]
+pub struct SharedFrozen<T>(Rc<T>);
+
+impl<T> SharedFrozen<T> {
+    pub fn new(value: T) -> Self {
+        SharedFrozen(Rc::new(value))
+    }
+
+    pub fn inner<'a>(&'a self) -> &T {
+        self.0.as_ref()
+    }
+
+    pub fn provenance(&self) -> usize {
+        Rc::as_ptr(&self.0).expose_provenance()
+    }
+}
+
+impl<T> From<T> for SharedFrozen<T> {
+    fn from(value: T) -> Self {
+        SharedFrozen::new(value)
+    }
+}
+
+impl<T> From<Shared<T>> for SharedFrozen<T>
+where
+    T: Clone,
+{
+    fn from(value: Shared<T>) -> Self {
+        SharedFrozen::new(value.into_raw_or_cloned())
+    }
+}
+
+impl<T> SharedFrozen<T>
+where
+    T: Clone,
+{
+    pub fn into_raw_or_cloned(self) -> T {
+        if Rc::strong_count(&self.0) == 1 {
+            if let Some(inner) = Rc::into_inner(self.0) {
+                inner
+            } else {
+                panic!("TOCTOU while trying to serialize Shared")
+            }
+        } else {
+            self.inner().clone()
+        }
+    }
+}
+
+impl<T> std::cmp::PartialEq for SharedFrozen<T>
+where
+    T: std::cmp::PartialEq,
+{
+    fn eq(&self, other: &Self) -> bool {
+        if Rc::ptr_eq(&self.0, &other.0) {
+            return true;
+        }
+
+        let this_inner = self.inner();
+        let other_inner = other.inner();
+
+        this_inner.eq(other_inner)
+    }
+}
+
 /// Represents all primitive builtin Python values that can be restored by
 /// unpickling.
 ///
@@ -101,17 +175,17 @@ pub enum Value {
     /// Float
     F64(f64),
     /// Bytestring
-    Bytes(Shared<Vec<u8>>),
+    Bytes(SharedFrozen<Vec<u8>>),
     /// Unicode string
-    String(Shared<String>),
+    String(SharedFrozen<String>),
     /// List
     List(Shared<Vec<Value>>),
     /// Tuple
-    Tuple(Shared<Vec<Value>>),
+    Tuple(SharedFrozen<Vec<Value>>),
     /// Set
     Set(Shared<BTreeSet<HashableValue>>),
     /// Frozen (immutable) set
-    FrozenSet(Shared<BTreeSet<HashableValue>>),
+    FrozenSet(SharedFrozen<BTreeSet<HashableValue>>),
     /// Dictionary (map)
     Dict(Shared<BTreeMap<HashableValue, Value>>),
 }
@@ -137,18 +211,18 @@ pub enum HashableValue {
     /// Float
     F64(f64),
     /// Bytestring
-    Bytes(Shared<Vec<u8>>),
+    Bytes(SharedFrozen<Vec<u8>>),
     /// Unicode string
-    String(Shared<String>),
+    String(SharedFrozen<String>),
     /// Tuple
-    Tuple(Shared<Vec<HashableValue>>),
+    Tuple(SharedFrozen<Vec<HashableValue>>),
     /// Frozen (immutable) set
-    FrozenSet(Shared<BTreeSet<HashableValue>>),
+    FrozenSet(SharedFrozen<BTreeSet<HashableValue>>),
 }
 
 fn values_to_raw_hashable(
-    values: Shared<Vec<Value>>,
-) -> Result<Shared<Vec<RawHashableValue>>, Error> {
+    values: SharedFrozen<Vec<Value>>,
+) -> Result<SharedFrozen<Vec<RawHashableValue>>, Error> {
     Ok(values
         .inner()
         .iter()
@@ -158,7 +232,9 @@ fn values_to_raw_hashable(
         .into())
 }
 
-fn values_to_hashable(values: Shared<Vec<Value>>) -> Result<Shared<Vec<HashableValue>>, Error> {
+fn values_to_hashable(
+    values: SharedFrozen<Vec<Value>>,
+) -> Result<SharedFrozen<Vec<HashableValue>>, Error> {
     Ok(values
         .inner()
         .iter()
@@ -168,7 +244,7 @@ fn values_to_hashable(values: Shared<Vec<Value>>) -> Result<Shared<Vec<HashableV
         .into())
 }
 
-fn hashable_to_values(values: Shared<Vec<HashableValue>>) -> Shared<Vec<Value>> {
+fn hashable_to_values(values: SharedFrozen<Vec<HashableValue>>) -> SharedFrozen<Vec<Value>> {
     values
         .inner()
         .iter()
@@ -213,7 +289,7 @@ impl Value {
                         .expect("failed to round-trip")
                 }));
 
-                Ok(RawHashableValue::FrozenSet(Shared::new(new)))
+                Ok(RawHashableValue::FrozenSet(SharedFrozen::new(new)))
             }
             Value::Tuple(v) => values_to_raw_hashable(v).map(RawHashableValue::Tuple),
             _ => Err(Error::Syntax(ErrorCode::ValueNotHashable)),
@@ -487,13 +563,13 @@ pub(crate) enum RawHashableValue {
     /// Float
     F64(f64),
     /// Bytestring
-    Bytes(Shared<Vec<u8>>),
+    Bytes(SharedFrozen<Vec<u8>>),
     /// Unicode string
-    String(Shared<String>),
+    String(SharedFrozen<String>),
     /// Tuple
-    Tuple(Shared<Vec<RawHashableValue>>),
+    Tuple(SharedFrozen<Vec<RawHashableValue>>),
     /// Frozen (immutable) set
-    FrozenSet(Shared<BTreeSet<RawHashableValue>>),
+    FrozenSet(SharedFrozen<BTreeSet<RawHashableValue>>),
 }
 
 impl std::cmp::Eq for RawHashableValue {}

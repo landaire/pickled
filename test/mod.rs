@@ -18,12 +18,12 @@ macro_rules! pyobj {
     (i=$i:expr)  => { Value::I64($i) };
     (ii=$i:expr) => { Value::Int($i.clone()) };
     (f=$f:expr)  => { Value::F64($f) };
-    (bb=$b:expr) => { Value::Bytes(crate::value::Shared::new($b.to_vec())) };
-    (s=$s:expr)  => { Value::String(crate::value::Shared::new($s.to_string())) };
-    (t=($($m:ident=$v:tt),*))  => { Value::Tuple(crate::value::Shared::new(vec![$(pyobj!($m=$v)),*])) };
+    (bb=$b:expr) => { Value::Bytes(crate::value::SharedFrozen::new($b.to_vec())) };
+    (s=$s:expr)  => { Value::String(crate::value::SharedFrozen::new($s.to_string())) };
+    (t=($($m:ident=$v:tt),*))  => { Value::Tuple(crate::value::SharedFrozen::new(vec![$(pyobj!($m=$v)),*])) };
     (l=[$($m:ident=$v:tt),*])  => { Value::List(crate::value::Shared::new(vec![$(pyobj!($m=$v)),*])) };
     (ss=($($m:ident=$v:tt),*)) => { Value::Set(crate::value::Shared::new(BTreeSet::from_iter(vec![$(hpyobj!($m=$v)),*]))) };
-    (fs=($($m:ident=$v:tt),*)) => { Value::FrozenSet(crate::value::Shared::new(BTreeSet::from_iter(vec![$(hpyobj!($m=$v)),*]))) };
+    (fs=($($m:ident=$v:tt),*)) => { Value::FrozenSet(crate::value::SharedFrozen::new(BTreeSet::from_iter(vec![$(hpyobj!($m=$v)),*]))) };
     (d={$($km:ident=$kv:tt => $vm:ident=$vv:tt),*}) => {
         Value::Dict(crate::value::Shared::new(BTreeMap::from_iter(vec![$((hpyobj!($km=$kv),
                                                 pyobj!($vm=$vv))),*]))) };
@@ -36,10 +36,10 @@ macro_rules! hpyobj {
     (i=$i:expr)  => { HashableValue::I64($i) };
     (ii=$i:expr) => { HashableValue::Int($i.clone()) };
     (f=$f:expr)  => { HashableValue::F64($f) };
-    (bb=$b:expr) => { HashableValue::Bytes(crate::value::Shared::new($b.to_vec())) };
-    (s=$s:expr)  => { HashableValue::String(crate::value::Shared::new($s.to_string())) };
-    (t=($($m:ident=$v:tt),*))  => { HashableValue::Tuple(crate::value::Shared::new(vec![$(hpyobj!($m=$v)),*])) };
-    (fs=($($m:ident=$v:tt),*)) => { HashableValue::FrozenSet(crate::value::Shared::new(BTreeSet::from_iter(vec![$(hpyobj!($m=$v)),*]))) };
+    (bb=$b:expr) => { HashableValue::Bytes(crate::value::SharedFrozen::new($b.to_vec())) };
+    (s=$s:expr)  => { HashableValue::String(crate::value::SharedFrozen::new($s.to_string())) };
+    (t=($($m:ident=$v:tt),*))  => { HashableValue::Tuple(crate::value::SharedFrozen::new(vec![$(hpyobj!($m=$v)),*])) };
+    (fs=($($m:ident=$v:tt),*)) => { HashableValue::FrozenSet(crate::value::SharedFrozen::new(BTreeSet::from_iter(vec![$(hpyobj!($m=$v)),*]))) };
 }
 
 mod struct_tests {

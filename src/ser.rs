@@ -419,7 +419,11 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
 
     #[inline]
     fn serialize_bool(self, value: bool) -> Result<()> {
-        self.write_opcode(if value { Opcode::NewTrue } else { Opcode::NewFalse })
+        self.write_opcode(if value {
+            Opcode::NewTrue
+        } else {
+            Opcode::NewFalse
+        })
     }
 
     #[inline]
@@ -657,7 +661,7 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
     fn serialize_seq(self, len: Option<usize>) -> Result<Self::SerializeSeq> {
         self.write_opcode(Opcode::EmptyList)?;
         match len {
-            Some(len) if len == 0 => Ok(Compound {
+            Some(0) => Ok(Compound {
                 ser: self,
                 state: None,
             }),
@@ -721,7 +725,7 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
     fn serialize_map(self, len: Option<usize>) -> Result<Self::SerializeMap> {
         self.write_opcode(Opcode::EmptyDict)?;
         match len {
-            Some(len) if len == 0 => Ok(Compound {
+            Some(0) => Ok(Compound {
                 ser: self,
                 state: None,
             }),
@@ -822,7 +826,7 @@ impl Serialize for Value {
             Value::F64(f) => serializer.serialize_f64(f),
             Value::Bytes(ref shared) => serializer.serialize_bytes(&shared.inner()),
             Value::String(ref shared) => serializer.serialize_str(&shared.inner()),
-            Value::Tuple(ref shared) | Value::List(ref shared) => {
+            Value::Tuple(ref shared) => {
                 let inner = shared.inner();
                 let mut seq = serializer.serialize_seq(Some(inner.len()))?;
                 for item in inner.iter() {
@@ -830,7 +834,23 @@ impl Serialize for Value {
                 }
                 seq.end()
             }
-            Value::Set(ref shared) | Value::FrozenSet(ref shared) => {
+            Value::List(ref shared) => {
+                let inner = shared.inner();
+                let mut seq = serializer.serialize_seq(Some(inner.len()))?;
+                for item in inner.iter() {
+                    seq.serialize_element(item)?;
+                }
+                seq.end()
+            }
+            Value::Set(ref shared) => {
+                let inner = shared.inner();
+                let mut seq = serializer.serialize_seq(Some(inner.len()))?;
+                for item in inner.iter() {
+                    seq.serialize_element(item)?;
+                }
+                seq.end()
+            }
+            Value::FrozenSet(ref shared) => {
                 let inner = shared.inner();
                 let mut seq = serializer.serialize_seq(Some(inner.len()))?;
                 for item in inner.iter() {
