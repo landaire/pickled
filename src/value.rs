@@ -96,7 +96,7 @@ impl<T> SharedFrozen<T> {
         SharedFrozen(Rc::new(value))
     }
 
-    pub fn inner<'a>(&'a self) -> &T {
+    pub fn inner(&self) -> &T {
         self.0.as_ref()
     }
 

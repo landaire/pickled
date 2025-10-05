@@ -110,12 +110,12 @@ impl<W: io::Write> Serializer<W> {
             HashableValue::Bool(b) => self.serialize_bool(b),
             HashableValue::I64(i) => self.serialize_i64(i),
             HashableValue::F64(f) => self.serialize_f64(f),
-            HashableValue::Bytes(ref b) => self.serialize_bytes(&b.inner()),
-            HashableValue::String(ref s) => self.serialize_str(&s.inner()),
+            HashableValue::Bytes(ref b) => self.serialize_bytes(b.inner()),
+            HashableValue::String(ref s) => self.serialize_str(s.inner()),
             HashableValue::Int(ref i) => self.serialize_bigint(i),
-            HashableValue::FrozenSet(ref s) => self.serialize_set(&s.inner(), b"frozenset"),
+            HashableValue::FrozenSet(ref s) => self.serialize_set(s.inner(), b"frozenset"),
             HashableValue::Tuple(ref t) => {
-                self.serialize_tuplevalue(&t.inner(), |slf, v| slf.serialize_hashable_value(v))
+                self.serialize_tuplevalue(t.inner(), |slf, v| slf.serialize_hashable_value(v))
             }
         }
     }
@@ -127,8 +127,8 @@ impl<W: io::Write> Serializer<W> {
             Value::Bool(b) => self.serialize_bool(b),
             Value::I64(i) => self.serialize_i64(i),
             Value::F64(f) => self.serialize_f64(f),
-            Value::Bytes(ref b) => self.serialize_bytes(&b.inner()),
-            Value::String(ref s) => self.serialize_str(&s.inner()),
+            Value::Bytes(ref b) => self.serialize_bytes(b.inner()),
+            Value::String(ref s) => self.serialize_str(s.inner()),
             Value::List(ref l) => {
                 self.write_opcode(Opcode::EmptyList)?;
                 for chunk in l.inner().chunks(1000) {
@@ -156,10 +156,10 @@ impl<W: io::Write> Serializer<W> {
             }
             Value::Int(ref i) => self.serialize_bigint(i),
             Value::Tuple(ref t) => {
-                self.serialize_tuplevalue(&t.inner(), |slf, v| slf.serialize_value(v))
+                self.serialize_tuplevalue(t.inner(), |slf, v| slf.serialize_value(v))
             }
             Value::Set(ref s) => self.serialize_set(&s.inner(), b"set"),
-            Value::FrozenSet(ref s) => self.serialize_set(&s.inner(), b"frozenset"),
+            Value::FrozenSet(ref s) => self.serialize_set(s.inner(), b"frozenset"),
         }
     }
 
@@ -824,8 +824,8 @@ impl Serialize for Value {
                 serializer.serialize_i128(big_int.to_i128().expect("cannot serialize bigint"))
             }
             Value::F64(f) => serializer.serialize_f64(f),
-            Value::Bytes(ref shared) => serializer.serialize_bytes(&shared.inner()),
-            Value::String(ref shared) => serializer.serialize_str(&shared.inner()),
+            Value::Bytes(ref shared) => serializer.serialize_bytes(shared.inner()),
+            Value::String(ref shared) => serializer.serialize_str(shared.inner()),
             Value::Tuple(ref shared) => {
                 let inner = shared.inner();
                 let mut seq = serializer.serialize_seq(Some(inner.len()))?;
@@ -889,8 +889,8 @@ impl Serialize for HashableValue {
                 serializer.serialize_i128(big_int.to_i128().expect("cannot serialize bigint"))
             }
             HashableValue::F64(f) => serializer.serialize_f64(f),
-            HashableValue::Bytes(ref shared) => serializer.serialize_bytes(&shared.inner()),
-            HashableValue::String(ref shared) => serializer.serialize_str(&shared.inner()),
+            HashableValue::Bytes(ref shared) => serializer.serialize_bytes(shared.inner()),
+            HashableValue::String(ref shared) => serializer.serialize_str(shared.inner()),
             HashableValue::Tuple(ref shared) => {
                 let inner = shared.inner();
                 let mut seq = serializer.serialize_seq(Some(inner.len()))?;

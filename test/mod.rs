@@ -6,11 +6,6 @@
 
 mod arby;
 
-use crate::value::Shared;
-use crate::{HashableValue, Value};
-use std::collections::{BTreeMap, BTreeSet};
-use std::iter::FromIterator;
-
 macro_rules! pyobj {
     (n=None)     => { Value::None };
     (b=True)     => { Value::Bool(true) };
@@ -43,7 +38,6 @@ macro_rules! hpyobj {
 }
 
 mod struct_tests {
-    use crate::value::Shared;
     use crate::{
         HashableValue, SerOptions, Value, from_slice, from_value, to_value, to_vec,
         value_from_slice, value_to_vec,
@@ -312,8 +306,7 @@ mod value_tests {
     use crate::{from_slice, to_vec, value_from_reader, value_from_slice, value_to_vec};
     use num_bigint::BigInt;
     use quickcheck::{Gen, QuickCheck};
-    use rand::{RngCore, thread_rng};
-    use serde_json;
+    use rand::{RngCore, rng};
     use std::collections::{BTreeMap, BTreeSet};
     use std::fs::File;
     use std::iter::FromIterator;
@@ -437,7 +430,7 @@ mod value_tests {
         // Tries to ensure that we don't panic when encountering strange streams.
         for _ in 0..1000 {
             let mut stream = [0u8; 1000];
-            thread_rng().fill_bytes(&mut stream);
+            rng().fill_bytes(&mut stream);
             if *stream.last().unwrap() == b'.' {
                 continue;
             }

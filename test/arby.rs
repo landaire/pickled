@@ -10,7 +10,7 @@ use crate::value::{Shared, SharedFrozen};
 use crate::{HashableValue, Value};
 use num_bigint::BigInt;
 use quickcheck::{Arbitrary, Gen, empty_shrinker};
-use std::{i64, ops::Range};
+use std::ops::Range;
 
 const MAX_DEPTH: u32 = 1;
 
@@ -96,7 +96,7 @@ fn gen_hvec(g: &mut Gen, depth: u32) -> Vec<HashableValue> {
 
 fn gen_range(r: Range<usize>, g: &mut Gen) -> usize {
     let possibilities = r.into_iter().collect::<Vec<_>>();
-    g.choose(possibilities.as_slice()).unwrap().clone()
+    *g.choose(possibilities.as_slice()).unwrap()
 }
 
 impl Arbitrary for Value {
@@ -112,22 +112,22 @@ impl Arbitrary for Value {
             Value::Int(_) => empty_shrinker(),
             Value::F64(v) => Box::new(Arbitrary::shrink(&v).map(Value::F64)),
             Value::Bytes(ref v) => {
-                Box::new(Arbitrary::shrink(&*v.inner()).map(|x| Value::Bytes(SharedFrozen::new(x))))
+                Box::new(Arbitrary::shrink(v.inner()).map(|x| Value::Bytes(SharedFrozen::new(x))))
             }
-            Value::String(ref v) => Box::new(
-                Arbitrary::shrink(&*v.inner()).map(|x| Value::String(SharedFrozen::new(x))),
-            ),
+            Value::String(ref v) => {
+                Box::new(Arbitrary::shrink(v.inner()).map(|x| Value::String(SharedFrozen::new(x))))
+            }
             Value::List(ref v) => {
                 Box::new(Arbitrary::shrink(&*v.inner()).map(|x| Value::List(Shared::new(x))))
             }
             Value::Tuple(ref v) => {
-                Box::new(Arbitrary::shrink(&*v.inner()).map(|x| Value::Tuple(SharedFrozen::new(x))))
+                Box::new(Arbitrary::shrink(v.inner()).map(|x| Value::Tuple(SharedFrozen::new(x))))
             }
             Value::Set(ref v) => {
                 Box::new(Arbitrary::shrink(&*v.inner()).map(|x| Value::Set(Shared::new(x))))
             }
             Value::FrozenSet(ref v) => Box::new(
-                Arbitrary::shrink(&*v.inner()).map(|x| Value::FrozenSet(SharedFrozen::new(x))),
+                Arbitrary::shrink(v.inner()).map(|x| Value::FrozenSet(SharedFrozen::new(x))),
             ),
             Value::Dict(ref v) => {
                 Box::new(Arbitrary::shrink(&*v.inner()).map(|x| Value::Dict(Shared::new(x))))
@@ -149,16 +149,16 @@ impl Arbitrary for HashableValue {
             HashableValue::Int(_) => empty_shrinker(),
             HashableValue::F64(v) => Box::new(Arbitrary::shrink(&v).map(HashableValue::F64)),
             HashableValue::Bytes(ref v) => Box::new(
-                Arbitrary::shrink(&*v.inner()).map(|x| HashableValue::Bytes(SharedFrozen::new(x))),
+                Arbitrary::shrink(v.inner()).map(|x| HashableValue::Bytes(SharedFrozen::new(x))),
             ),
             HashableValue::String(ref v) => Box::new(
-                Arbitrary::shrink(&*v.inner()).map(|x| HashableValue::String(SharedFrozen::new(x))),
+                Arbitrary::shrink(v.inner()).map(|x| HashableValue::String(SharedFrozen::new(x))),
             ),
             HashableValue::Tuple(ref v) => Box::new(
-                Arbitrary::shrink(&*v.inner()).map(|x| HashableValue::Tuple(SharedFrozen::new(x))),
+                Arbitrary::shrink(v.inner()).map(|x| HashableValue::Tuple(SharedFrozen::new(x))),
             ),
             HashableValue::FrozenSet(ref v) => Box::new(
-                Arbitrary::shrink(&*v.inner())
+                Arbitrary::shrink(v.inner())
                     .map(|x| HashableValue::FrozenSet(SharedFrozen::new(x))),
             ),
         }
