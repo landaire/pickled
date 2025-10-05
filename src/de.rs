@@ -16,6 +16,7 @@ use num_bigint::{BigInt, Sign};
 use num_traits::ToPrimitive;
 use serde::de::Visitor;
 use serde::{de, forward_to_deserialize_any};
+use std::borrow::Cow;
 use std::char;
 use std::collections::{BTreeMap, HashMap};
 use std::convert::TryFrom;
@@ -39,14 +40,18 @@ type MemoId = u32;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Global {
-    Set,                   // builtins/__builtin__.set
-    Frozenset,             // builtins/__builtin__.frozenset
-    Bytearray,             // builtins/__builtin__.bytearray
-    List,                  // builtins/__builtin__.list
-    Int,                   // builtins/__builtin__.int
-    Encode,                // _codecs.encode
-    Reconstructor,         // builtins/__builtin__.object
-    Other(String, String), // anything else (may be a classobj that is later discarded)
+    Set,           // builtins/__builtin__.set
+    Frozenset,     // builtins/__builtin__.frozenset
+    Bytearray,     // builtins/__builtin__.bytearray
+    List,          // builtins/__builtin__.list
+    Int,           // builtins/__builtin__.int
+    Encode,        // _codecs.encode
+    Reconstructor, // copy_reg._reconstructor
+    // anything else (may be a classobj that is later discarded)
+    Other {
+        modname: Cow<'static, str>,
+        globname: Cow<'static, str>,
+    },
 }
 
 /// Our intermediate representation of a value.
@@ -82,6 +87,7 @@ pub struct DeOptions {
     decode_strings: bool,
     replace_unresolved_globals: bool,
     replace_recursive_structures: bool,
+    replace_reconstructor_objects_with_dict: bool,
 }
 
 impl DeOptions {
@@ -108,6 +114,12 @@ impl DeOptions {
     /// Activate replacing recursive structures by `None`, instead of erroring out.
     pub fn replace_recursive_structures(mut self) -> Self {
         self.replace_recursive_structures = true;
+        self
+    }
+
+    /// Activate replacing recursive structures by with a best-attempt dictionary, instead of erroring out.
+    pub fn replace_reconstructor_objects_structures(mut self) -> Self {
+        self.replace_reconstructor_objects_with_dict = true;
         self
     }
 }
@@ -1076,12 +1088,17 @@ impl<R: Read> Deserializer<R> {
             }
             (b"__builtin__", b"int") | (b"builtins", b"int") => Value::Global(Global::Int),
             (b"copy_reg", b"_reconstructor") => Value::Global(Global::Reconstructor),
-            _ => Value::Global(Global::Other(
-                String::from_utf8(modname)
-                    .map_err(|_| self.inner_error(ErrorCode::StringNotUTF8))?,
-                String::from_utf8(globname)
-                    .map_err(|_| self.inner_error(ErrorCode::StringNotUTF8))?,
-            )),
+            _ => {
+                let modname = String::from_utf8(modname)
+                    .map_err(|_| self.inner_error(ErrorCode::StringNotUTF8))?;
+                let globname = String::from_utf8(globname)
+                    .map_err(|_| self.inner_error(ErrorCode::StringNotUTF8))?;
+
+                Value::Global(Global::Other {
+                    modname: Cow::Owned(modname),
+                    globname: Cow::Owned(globname),
+                })
+            }
         };
         Ok(value)
     }
@@ -1159,17 +1176,26 @@ impl<R: Read> Deserializer<R> {
                 let _args = self.resolve(argtuple.inner_mut().pop());
                 let _func = self.resolve(argtuple.inner_mut().pop());
 
-                let value = Value::Dict(Shared::new(Default::default()));
+                let value = if self.options.replace_reconstructor_objects_with_dict {
+                    Value::Dict(Shared::new(Default::default()))
+                } else {
+                    // If the user doesn't want to replace reconstructor objects, transition this to an unresolved global
+                    // so that we can bubble up unresolved global errors.
+                    Value::Global(Global::Other {
+                        modname: Cow::Borrowed("copy_reg"),
+                        globname: Cow::Borrowed("_reconstructor"),
+                    })
+                };
 
                 self.stack.push(value);
                 Ok(())
             }
-            Value::Global(Global::Other(modname, classname)) => {
+            Value::Global(Global::Other { modname, globname }) => {
                 // Anything else; just keep it on the stack as an opaque object.
                 // If it is a class object, it will get replaced later when the
                 // class is instantiated.
                 self.stack
-                    .push(Value::Global(Global::Other(modname, classname)));
+                    .push(Value::Global(Global::Other { modname, globname }));
                 Ok(())
             }
             other => Self::stack_error("global reference", &other, self.pos),
@@ -1292,7 +1318,13 @@ impl<R: Read> Deserializer<R> {
                 self.resolve_recursive(memo_id, (), |slf, (), value| slf.convert_value(value))
             }
             Value::Global(Global::Reconstructor) => {
-                Ok(value::Value::Dict(Shared::new(Default::default())))
+                // TODO: This I _think_ is unreachable? Global::Reconstructor instances should have been
+                // reduced to an empty dict by this point
+                if self.options.replace_reconstructor_objects_with_dict {
+                    Ok(value::Value::Dict(Shared::new(Default::default())))
+                } else {
+                    Err(Error::Syntax(ErrorCode::UnresolvedGlobal))
+                }
             }
             Value::Global(_) => {
                 if self.options.replace_unresolved_globals {
