@@ -1159,7 +1159,7 @@ impl<R: Read> Deserializer<R> {
                 let _args = self.resolve(argtuple.inner_mut().pop());
                 let _func = self.resolve(argtuple.inner_mut().pop());
 
-                let value = Value::Global(Global::Reconstructor);
+                let value = Value::Dict(Shared::new(Default::default()));
 
                 self.stack.push(value);
                 Ok(())
@@ -1290,6 +1290,9 @@ impl<R: Read> Deserializer<R> {
             }
             Value::MemoRef(memo_id) => {
                 self.resolve_recursive(memo_id, (), |slf, (), value| slf.convert_value(value))
+            }
+            Value::Global(Global::Reconstructor) => {
+                Ok(value::Value::Dict(Shared::new(Default::default())))
             }
             Value::Global(_) => {
                 if self.options.replace_unresolved_globals {

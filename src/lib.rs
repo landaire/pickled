@@ -78,6 +78,8 @@ pub use self::de::{
 pub use self::value::{HashableValue, Value, from_value, to_value};
 
 pub use self::error::{Error, ErrorCode, Result};
+pub use num_bigint;
+pub use num_traits;
 
 mod consts;
 pub mod de;

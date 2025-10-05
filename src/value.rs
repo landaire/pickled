@@ -8,6 +8,7 @@
 
 use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive};
+use std::borrow::Cow;
 use std::cell::{Ref, RefCell, RefMut};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
@@ -234,6 +235,31 @@ impl HashableValue {
             HashableValue::FrozenSet(v) => Value::FrozenSet(v),
             HashableValue::Tuple(v) => Value::Tuple(hashable_to_values(v)),
         }
+    }
+
+    /// Returns a value that's suitable for use as a string key
+    pub fn to_string_key(&self) -> Option<Cow<'static, str>> {
+        let result = match *self {
+            HashableValue::String(ref s) => Cow::Owned(s.inner().to_owned()),
+            HashableValue::None => Cow::Borrowed("null"),
+            HashableValue::Bool(b) => Cow::Owned(b.to_string()),
+            HashableValue::I64(i) => Cow::Owned(i.to_string()),
+            HashableValue::Int(ref big_int) => Cow::Owned(big_int.to_string()),
+            HashableValue::F64(f) => {
+                let mut as_str = f.to_string();
+                if !as_str.contains('.') {
+                    as_str += ".0";
+                }
+
+                Cow::Owned(as_str)
+            }
+            _ => {
+                // All other key types are invalid
+                return None;
+            }
+        };
+
+        Some(result)
     }
 }
 

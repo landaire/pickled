@@ -7,10 +7,14 @@
 //! Pickle serialization
 
 use byteorder::{BigEndian, LittleEndian, WriteBytesExt};
+use itertools::Itertools;
 use num_bigint::BigInt;
 use num_traits::Signed;
+use num_traits::ToPrimitive;
 use serde::ser;
 use serde::ser::Serialize;
+use serde::ser::SerializeMap;
+use serde::ser::SerializeSeq;
 use std::collections::BTreeSet;
 use std::io;
 
@@ -801,4 +805,88 @@ pub fn to_vec<T: Serialize>(value: &T, options: SerOptions) -> Result<Vec<u8>> {
     let mut writer = Vec::with_capacity(128);
     to_writer(&mut writer, value, options)?;
     Ok(writer)
+}
+
+impl Serialize for Value {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: ser::Serializer,
+    {
+        match *self {
+            Value::None => serializer.serialize_none(),
+            Value::Bool(b) => serializer.serialize_bool(b),
+            Value::I64(i) => serializer.serialize_i64(i),
+            Value::Int(ref big_int) => {
+                serializer.serialize_i128(big_int.to_i128().expect("cannot serialize bigint"))
+            }
+            Value::F64(f) => serializer.serialize_f64(f),
+            Value::Bytes(ref shared) => serializer.serialize_bytes(&shared.inner()),
+            Value::String(ref shared) => serializer.serialize_str(&shared.inner()),
+            Value::Tuple(ref shared) | Value::List(ref shared) => {
+                let inner = shared.inner();
+                let mut seq = serializer.serialize_seq(Some(inner.len()))?;
+                for item in inner.iter() {
+                    seq.serialize_element(item)?;
+                }
+                seq.end()
+            }
+            Value::Set(ref shared) | Value::FrozenSet(ref shared) => {
+                let inner = shared.inner();
+                let mut seq = serializer.serialize_seq(Some(inner.len()))?;
+                for item in inner.iter() {
+                    seq.serialize_element(item)?;
+                }
+                seq.end()
+            }
+            Value::Dict(ref shared) => {
+                let inner = shared.inner();
+                let mut map = serializer.serialize_map(Some(inner.len()))?;
+                for (key, value) in inner
+                    .iter()
+                    .filter_map(|(key, value)| Some((key.to_string_key()?, value)))
+                    .sorted_by(|(this_key, _this_value), (other_key, _other_value)| {
+                        this_key.cmp(other_key)
+                    })
+                {
+                    map.serialize_entry(key.as_ref(), value)?;
+                }
+                map.end()
+            }
+        }
+    }
+}
+
+impl Serialize for HashableValue {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: ser::Serializer,
+    {
+        match *self {
+            HashableValue::None => serializer.serialize_none(),
+            HashableValue::Bool(b) => serializer.serialize_bool(b),
+            HashableValue::I64(i) => serializer.serialize_i64(i),
+            HashableValue::Int(ref big_int) => {
+                serializer.serialize_i128(big_int.to_i128().expect("cannot serialize bigint"))
+            }
+            HashableValue::F64(f) => serializer.serialize_f64(f),
+            HashableValue::Bytes(ref shared) => serializer.serialize_bytes(&shared.inner()),
+            HashableValue::String(ref shared) => serializer.serialize_str(&shared.inner()),
+            HashableValue::Tuple(ref shared) => {
+                let inner = shared.inner();
+                let mut seq = serializer.serialize_seq(Some(inner.len()))?;
+                for item in inner.iter() {
+                    seq.serialize_element(item)?;
+                }
+                seq.end()
+            }
+            HashableValue::FrozenSet(ref shared) => {
+                let inner = shared.inner();
+                let mut seq = serializer.serialize_seq(Some(inner.len()))?;
+                for item in inner.iter() {
+                    seq.serialize_element(item)?;
+                }
+                seq.end()
+            }
+        }
+    }
 }
