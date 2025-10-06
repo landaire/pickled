@@ -7,7 +7,6 @@
 //! Pickle serialization
 
 use byteorder::{BigEndian, LittleEndian, WriteBytesExt};
-use itertools::Itertools;
 use num_bigint::BigInt;
 use num_traits::Signed;
 use num_traits::ToPrimitive;
@@ -861,13 +860,18 @@ impl Serialize for Value {
             Value::Dict(ref shared) => {
                 let inner = shared.inner();
                 let mut map = serializer.serialize_map(Some(inner.len()))?;
-                for (key, value) in inner
-                    .iter()
-                    .filter_map(|(key, value)| Some((key.to_string_key()?, value)))
-                    .sorted_by(|(this_key, _this_value), (other_key, _other_value)| {
-                        this_key.cmp(other_key)
-                    })
-                {
+
+                let mut kv_pairs = Vec::from_iter(
+                    inner
+                        .iter()
+                        .filter_map(|(key, value)| Some((key.to_string_key()?, value))),
+                );
+
+                kv_pairs.sort_by(|(this_key, _this_value), (other_key, _other_value)| {
+                    this_key.cmp(other_key)
+                });
+
+                for (key, value) in kv_pairs.iter() {
                     map.serialize_entry(key.as_ref(), value)?;
                 }
                 map.end()
